@@ -4,15 +4,25 @@ on:
   repository_dispatch:
     types: [claude-fix]
 
-env:
-  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-
 jobs:
   fix-code:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # Use API key from webhook payload (per-user key from Supabase)
+    env:
+      ANTHROPIC_API_KEY: ${{ github.event.client_payload.anthropic_api_key }}
+
     steps:
+      - name: Validate API Key
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::No Anthropic API key provided in payload"
+            echo "The user needs to configure their API key at the setup page."
+            exit 1
+          fi
+          echo "API key present (length: ${#ANTHROPIC_API_KEY} chars)"
+
       - name: Log Incoming Request
         run: |
           echo "========================================================"

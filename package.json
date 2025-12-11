@@ -1,6 +1,6 @@
 {
   "name": "claude-bot",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Self Healing Claude - GitHub App that fixes code issues using Claude AI",
   "main": "webhook-handler.js",
   "scripts": {
@@ -10,6 +10,9 @@
   "dependencies": {
     "@octokit/app": "^14.0.0",
     "@octokit/rest": "^20.0.2",
+    "@sendgrid/mail": "^8.1.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^17.2.3",
     "smee-client": "^2.0.0"
   },
   "author": "Murali1889",
