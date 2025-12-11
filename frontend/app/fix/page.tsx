@@ -1,0 +1,53 @@
+import { getSessionUser } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import FixClient from "./FixClient";
+
+/**
+ * Fix Submission Page
+ *
+ * Allows users to:
+ * - Select a repository from their installations
+ * - Enter a problem statement
+ * - Submit for Claude Code CLI execution
+ * - View execution status
+ * - See PR when complete
+ */
+export default async function FixPage() {
+  // Require authentication
+  const user = await getSessionUser();
+
+  if (!user) {
+    redirect("/");
+  }
+
+  return (
+    <main className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      {/* Header */}
+      <header className="bg-white dark:bg-gray-800 shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+                Create Fix
+              </h1>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Let Claude fix your code automatically
+              </p>
+            </div>
+            <a
+              href="/dashboard"
+              className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              ← Back to Dashboard
+            </a>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <FixClient user={user} />
+      </div>
+    </main>
+  );
+}

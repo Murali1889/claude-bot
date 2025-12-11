@@ -24,7 +24,7 @@ function SetupContent() {
   const [isTesting, setIsTesting] = useState(false);
   const oauthProcessed = useRef(false);
 
-  // Check if user is authenticated
+  // Check if user is authenticated and capture installation
   useEffect(() => {
     if (!installationId) {
       setStep("error");
@@ -42,6 +42,13 @@ function SetupContent() {
       checkAuthStatus();
     }
   }, [installationId]);
+
+  // Capture installation in database when authenticated
+  useEffect(() => {
+    if (step === "setup" && installationId) {
+      captureInstallation();
+    }
+  }, [step, installationId]);
 
   // Verify installation exists
   useEffect(() => {
@@ -77,6 +84,34 @@ function SetupContent() {
       }
     } catch (err) {
       setStep("auth");
+    }
+  }
+
+  async function captureInstallation() {
+    try {
+      const setupAction = searchParams.get("setup_action") || "install";
+
+      const res = await fetch("/api/installations/capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          installation_id: installationId,
+          setup_action: setupAction,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!data.success) {
+        console.error("Failed to capture installation:", data.error);
+        // Don't show error to user - this is background operation
+        // Installation will be captured via webhook as fallback
+      } else {
+        console.log("Installation captured successfully:", data.installation);
+      }
+    } catch (err) {
+      console.error("Error capturing installation:", err);
+      // Silently fail - webhook will handle it
     }
   }
 

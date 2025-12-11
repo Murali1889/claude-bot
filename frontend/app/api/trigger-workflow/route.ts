@@ -26,29 +26,71 @@ export async function POST(request: NextRequest) {
 
     const [owner, repo] = repoFullName.split("/");
 
-    // Save the API key to database first (so webhook can find it)
-    const githubUserId = request.cookies.get("github_user_id")?.value;
+    // Initialize GitHub App
+    const { App } = await import("@octokit/app");
+    const app = new App({
+      appId: parseInt(process.env.APP_ID!, 10),
+      privateKey: process.env.PRIVATE_KEY!.replace(/\\n/g, '\n'),
+    });
 
-    if (!githubUserId) {
+    // Get all installations and find the one for this owner
+    const { data: installations } = await app.octokit.request("GET /app/installations");
+    const installation = installations.find(
+      (inst: any) => inst.account.login.toLowerCase() === owner.toLowerCase()
+    );
+
+    if (!installation) {
       return NextResponse.json(
-        { success: false, error: "Not authenticated. Please go through setup page first." },
-        { status: 401 }
+        { success: false, error: `GitHub App not installed on ${owner}. Please install it first.` },
+        { status: 404 }
       );
     }
 
     const supabase = createServerClient();
 
-    // Get or find installation for this repo
-    const { data: installation } = await supabase
+    // Save or update installation in database for future webhook use
+    const { data: existingInstallation } = await supabase
       .from("installations")
       .select("*")
-      .eq("account_login", owner)
+      .eq("installation_id", installation.id)
       .single();
 
-    if (!installation) {
-      return NextResponse.json(
-        { success: false, error: `GitHub App not installed on ${owner}. Install it first.` },
-        { status: 404 }
+    let userId = existingInstallation?.user_id;
+
+    if (!existingInstallation) {
+      // Ensure account exists
+      if (!installation.account) {
+        return NextResponse.json(
+          { success: false, error: "Installation account data not available" },
+          { status: 500 }
+        );
+      }
+
+      // Create a dummy user record if needed (for testing)
+      const { data: user } = await supabase
+        .from("users")
+        .upsert(
+          {
+            github_user_id: installation.account.id,
+            github_username: installation.account.login,
+          },
+          { onConflict: "github_user_id" }
+        )
+        .select()
+        .single();
+
+      userId = user?.id;
+
+      // Save installation to database
+      await supabase.from("installations").upsert(
+        {
+          installation_id: installation.id,
+          user_id: userId,
+          account_id: installation.account.id,
+          account_login: installation.account.login,
+          account_type: installation.account.type,
+        },
+        { onConflict: "installation_id" }
       );
     }
 
@@ -59,8 +101,8 @@ export async function POST(request: NextRequest) {
 
     await supabase.from("api_keys").upsert(
       {
-        installation_id: installation.installation_id,
-        user_id: installation.user_id,
+        installation_id: installation.id,
+        user_id: userId,
         encrypted_key: encrypted,
         key_iv: iv,
         key_auth_tag: authTag,
@@ -73,13 +115,7 @@ export async function POST(request: NextRequest) {
     );
 
     // Use GitHub App to create issue (triggers webhook automatically)
-    const { App } = await import("@octokit/app");
-    const app = new App({
-      appId: parseInt(process.env.APP_ID!, 10),
-      privateKey: process.env.PRIVATE_KEY!.replace(/\\n/g, '\n'),
-    });
-
-    const octokit = await app.getInstallationOctokit(installation.installation_id);
+    const octokit = await app.getInstallationOctokit(installation.id);
 
     // Create the issue with @claude mention using request API
     const { data: issue } = await octokit.request("POST /repos/{owner}/{repo}/issues", {

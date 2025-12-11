@@ -1,0 +1,196 @@
+# Worker Repository Workflow
+# This file should be placed in: claude-bot-worker/.github/workflows/fix-code.yml
+#
+# This workflow runs in YOUR worker repository and operates on USER repositories
+
+name: Claude Fix Code
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'Target repository (owner/repo)'
+        required: true
+        type: string
+      problem_statement:
+        description: 'Problem to fix'
+        required: true
+        type: string
+      installation_id:
+        description: 'GitHub App installation ID'
+        required: true
+        type: string
+      job_id:
+        description: 'Job ID for tracking'
+        required: true
+        type: string
+      api_key:
+        description: 'Anthropic API key (encrypted)'
+        required: true
+        type: string
+
+jobs:
+  fix-code:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Generate Installation Token
+        id: generate-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+          installation_retrieval_mode: id
+          installation_retrieval_payload: ${{ inputs.installation_id }}
+
+      - name: Clone Target Repository
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ inputs.target_repo }}.git" repo
+          cd repo
+          git config user.name "Claude Bot"
+          git config user.email "bot@claudebot.app"
+
+      - name: Create Fix Branch
+        run: |
+          cd repo
+          BRANCH_NAME="claude-fix-$(date +%s)"
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          git checkout -b "$BRANCH_NAME"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run Claude to Fix Code
+        env:
+          ANTHROPIC_API_KEY: ${{ inputs.api_key }}
+        run: |
+          cd repo
+
+          # Run Claude CLI
+          echo "Running Claude CLI..."
+          claude -p "You are a code fixing assistant. Fix the following issue:
+
+          ## Problem
+          ${{ inputs.problem_statement }}
+
+          ## Instructions
+          1. Analyze the codebase to understand the issue
+          2. Make the necessary code changes to fix it
+          3. Keep changes minimal and focused
+          4. Preserve existing code style
+          5. Only modify what's needed
+
+          Please make the changes now." \
+            --dangerously-skip-permissions \
+            --max-turns 20 || true
+
+      - name: Check for Changes
+        id: changes
+        run: |
+          cd repo
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "✅ Changes detected"
+            git status --short
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "❌ No changes made"
+          fi
+
+      - name: Commit Changes
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          cd repo
+          git add -A
+          git commit -m "fix: ${{ inputs.problem_statement }}" || true
+
+      - name: Push Branch
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          cd repo
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ inputs.target_repo }}.git"
+          git push -u origin "$BRANCH_NAME"
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          cd repo
+
+          # Get diff stats
+          DIFF_STATS=$(git diff HEAD~1 --stat)
+
+          # Create PR
+          PR_URL=$(gh pr create \
+            --title "Fix: ${{ inputs.problem_statement }}" \
+            --body "## Automated Fix by Claude
+
+          **Problem:** ${{ inputs.problem_statement }}
+
+          ### Changes Made
+          \`\`\`
+          $DIFF_STATS
+          \`\`\`
+
+          ---
+          🤖 Generated automatically by Claude Bot
+          Job ID: \`${{ inputs.job_id }}\`" \
+            --base main \
+            --head "$BRANCH_NAME" | tail -1)
+
+          echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+          echo "✅ Pull request created: $PR_URL"
+
+      - name: Report Success to API
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          # Extract PR number from URL
+          PR_NUMBER=$(echo "$PR_URL" | grep -o '[0-9]*$')
+
+          # Send webhook to your API
+          curl -X POST "https://claude-bot.vercel.app/api/fix/webhook" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"completed\",
+              \"pr_url\": \"$PR_URL\",
+              \"pr_number\": $PR_NUMBER,
+              \"branch_name\": \"$BRANCH_NAME\"
+            }" || true
+
+      - name: Report No Changes
+        if: steps.changes.outputs.has_changes == 'false'
+        run: |
+          curl -X POST "https://claude-bot.vercel.app/api/fix/webhook" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"failed\",
+              \"error_message\": \"Claude did not make any code changes\"
+            }" || true
+
+      - name: Report Failure
+        if: failure()
+        run: |
+          curl -X POST "https://claude-bot.vercel.app/api/fix/webhook" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"failed\",
+              \"error_message\": \"Workflow failed\"
+            }" || true
