@@ -81,12 +81,15 @@ export async function POST(request: NextRequest) {
 
     const octokit = await app.getInstallationOctokit(installation.installation_id);
 
-    // Create the issue with @claude mention
-    const { data: issue } = await octokit.issues.create({
+    // Create the issue with @claude mention using request API
+    const { data: issue } = await octokit.request("POST /repos/{owner}/{repo}/issues", {
       owner,
       repo,
       title: `Test: ${problemDescription.substring(0, 60)}`,
       body: `@claude ${problemDescription}\n\n---\n*Created from test page*`,
+      headers: {
+        'X-GitHub-Api-Version': '2022-11-28'
+      }
     });
 
     return NextResponse.json({
