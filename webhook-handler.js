@@ -1,36 +1,115 @@
 /**
  * GitHub App Webhook Handler
- *
- * This runs locally during development using smee.io
- * For production, deploy to Cloudflare Workers or Vercel
+ * Uses Installation Access Tokens (secure, auto-expiring)
  */
 
-const { Webhooks } = require("@octokit/webhooks");
+const { App } = require("@octokit/app");
 const { Octokit } = require("@octokit/rest");
 const SmeeClient = require("smee-client");
+const http = require("http");
 
-// Configuration
+// Configuration - UPDATE THESE
 const CONFIG = {
-  SMEE_URL: process.env.SMEE_URL || "https://smee.io/hvqA4xWSJEikpQuc",
+  // Get these from your GitHub App settings page
+  APP_ID: process.env.APP_ID || "YOUR_APP_ID",
+  PRIVATE_KEY: process.env.PRIVATE_KEY || `-----BEGIN RSA PRIVATE KEY-----
+YOUR_PRIVATE_KEY_HERE
+-----END RSA PRIVATE KEY-----`,
   WEBHOOK_SECRET: process.env.WEBHOOK_SECRET || "self-healing-claude-secret-2024",
-  GITHUB_TOKEN: process.env.BOT_GITHUB_TOKEN,
+
+  // Smee URL for local development
+  SMEE_URL: process.env.SMEE_URL || "https://smee.io/hvqA4xWSJEikpQuc",
+
+  // Your worker repo
   WORKER_REPO: process.env.WORKER_REPO || "Murali1889/claude-bot",
-  TRIGGER_PHRASE: "@claude", // What users type to trigger the bot
+
+  // Trigger phrase
+  TRIGGER_PHRASE: "@claude",
 };
 
-// Initialize
-const webhooks = new Webhooks({ secret: CONFIG.WEBHOOK_SECRET });
-const octokit = new Octokit({ auth: CONFIG.GITHUB_TOKEN });
+// Initialize GitHub App
+const app = new App({
+  appId: CONFIG.APP_ID,
+  privateKey: CONFIG.PRIVATE_KEY,
+  webhooks: {
+    secret: CONFIG.WEBHOOK_SECRET,
+  },
+});
+
+/**
+ * Get installation access token for a specific installation
+ * This token is scoped to only the repos the user granted access to
+ * Token expires in 1 hour (secure!)
+ */
+async function getInstallationToken(installationId) {
+  const octokit = await app.getInstallationOctokit(installationId);
+
+  // Get the token
+  const { token } = await octokit.auth({
+    type: "installation",
+    installationId: installationId,
+  });
+
+  return token;
+}
+
+/**
+ * Trigger the worker workflow with the installation token
+ */
+async function triggerWorker(payload, installationToken) {
+  // Use a separate octokit for triggering (needs access to worker repo)
+  // For now, we'll include the token in the payload
+  const octokit = await app.getInstallationOctokit(payload.installation.id);
+
+  try {
+    await octokit.repos.createDispatchEvent({
+      owner: CONFIG.WORKER_REPO.split("/")[0],
+      repo: CONFIG.WORKER_REPO.split("/")[1],
+      event_type: "claude-fix",
+      client_payload: {
+        // Repository info
+        repo: payload.repository.full_name,
+        repo_owner: payload.repository.owner.login,
+        repo_name: payload.repository.name,
+
+        // Issue info
+        issue_number: payload.issue.number,
+        issue_title: payload.issue.title,
+        issue_body: payload.issue.body || "",
+
+        // The installation token (expires in 1 hour)
+        installation_token: installationToken,
+
+        // Description for Claude
+        description: `${payload.issue.title}\n\n${payload.issue.body || ""}`,
+
+        // Who triggered it
+        triggered_by: payload.sender.login,
+      },
+    });
+
+    console.log("Worker workflow triggered successfully!");
+    return true;
+  } catch (error) {
+    console.error("Error triggering workflow:", error.message);
+    return false;
+  }
+}
 
 // Handle issue comments
-webhooks.on("issue_comment.created", async ({ payload }) => {
+app.webhooks.on("issue_comment.created", async ({ payload }) => {
   const comment = payload.comment.body;
   const issue = payload.issue;
   const repo = payload.repository;
 
   // Check if comment mentions the bot
   if (!comment.toLowerCase().includes(CONFIG.TRIGGER_PHRASE)) {
-    console.log("Comment doesn't contain trigger phrase, skipping");
+    return;
+  }
+
+  // Ignore if it's a PR comment (not an issue)
+  if (payload.issue.pull_request) {
+    console.log("Ignoring PR comment");
     return;
   }
 
@@ -38,12 +117,20 @@ webhooks.on("issue_comment.created", async ({ payload }) => {
   console.log(`Trigger detected!`);
   console.log(`Repo: ${repo.full_name}`);
   console.log(`Issue: #${issue.number} - ${issue.title}`);
-  console.log(`Comment: ${comment}`);
+  console.log(`Installation ID: ${payload.installation.id}`);
   console.log(`========================================\n`);
 
-  // Extract instruction from comment (everything after @claude)
+  // Extract instruction from comment
   const match = comment.match(/@claude\s+([\s\S]*)/i);
   const instruction = match ? match[1].trim() : "fix this issue";
+
+  // Get installation-specific token
+  console.log("Getting installation token...");
+  const installationToken = await getInstallationToken(payload.installation.id);
+  console.log("Token obtained (expires in 1 hour)");
+
+  // Get octokit for this installation
+  const octokit = await app.getInstallationOctokit(payload.installation.id);
 
   // React to show we received it
   try {
@@ -57,138 +144,113 @@ webhooks.on("issue_comment.created", async ({ payload }) => {
     console.log("Could not add reaction:", e.message);
   }
 
-  // Trigger the worker workflow
-  try {
-    console.log("Triggering worker workflow...");
+  // Update payload with instruction
+  payload.instruction = instruction;
 
-    await octokit.repos.createDispatchEvent({
-      owner: CONFIG.WORKER_REPO.split("/")[0],
-      repo: CONFIG.WORKER_REPO.split("/")[1],
-      event_type: "claude-fix",
-      client_payload: {
-        repo: repo.full_name,
-        issue_number: issue.number,
-        issue_title: issue.title,
-        issue_body: issue.body || "",
-        description: `${issue.title}\n\n${issue.body || ""}\n\nInstruction: ${instruction}`,
-        file_hint: "", // Could parse from comment if needed
-        triggered_by: payload.comment.user.login,
-      },
-    });
+  // Trigger the worker
+  const success = await triggerWorker(payload, installationToken);
 
-    console.log("Worker workflow triggered successfully!");
-
-    // Add rocket reaction to show it's being processed
-    await octokit.reactions.createForIssueComment({
-      owner: repo.owner.login,
-      repo: repo.name,
-      comment_id: payload.comment.id,
-      content: "rocket",
-    });
-  } catch (error) {
-    console.error("Error triggering workflow:", error.message);
-
-    // Comment on issue about the error
+  if (success) {
+    // Add rocket reaction
+    try {
+      await octokit.reactions.createForIssueComment({
+        owner: repo.owner.login,
+        repo: repo.name,
+        comment_id: payload.comment.id,
+        content: "rocket",
+      });
+    } catch (e) {
+      console.log("Could not add rocket reaction:", e.message);
+    }
+  } else {
+    // Comment about error
     await octokit.issues.createComment({
       owner: repo.owner.login,
       repo: repo.name,
       issue_number: issue.number,
-      body: `❌ Sorry, I encountered an error while processing this request.\n\nError: ${error.message}`,
+      body: `❌ Sorry, I encountered an error while processing this request. Please try again.`,
     });
   }
 });
 
-// Handle new issues with label
-webhooks.on("issues.labeled", async ({ payload }) => {
-  const label = payload.label.name;
-  const issue = payload.issue;
-  const repo = payload.repository;
+// Handle issues with label
+app.webhooks.on("issues.labeled", async ({ payload }) => {
+  const label = payload.label.name.toLowerCase();
 
-  // Trigger on specific label (e.g., "claude" or "ai-fix")
-  if (label !== "claude" && label !== "ai-fix") {
+  // Only trigger on specific labels
+  if (label !== "claude" && label !== "ai-fix" && label !== "auto-fix") {
     return;
   }
 
   console.log(`\n========================================`);
   console.log(`Label trigger: ${label}`);
-  console.log(`Repo: ${repo.full_name}`);
-  console.log(`Issue: #${issue.number}`);
+  console.log(`Repo: ${payload.repository.full_name}`);
+  console.log(`Issue: #${payload.issue.number}`);
   console.log(`========================================\n`);
 
-  // Trigger worker
-  try {
-    await octokit.repos.createDispatchEvent({
-      owner: CONFIG.WORKER_REPO.split("/")[0],
-      repo: CONFIG.WORKER_REPO.split("/")[1],
-      event_type: "claude-fix",
-      client_payload: {
-        repo: repo.full_name,
-        issue_number: issue.number,
-        issue_title: issue.title,
-        issue_body: issue.body || "",
-        description: `${issue.title}\n\n${issue.body || ""}`,
-        file_hint: "",
-        triggered_by: "label",
-      },
-    });
+  // Get installation token
+  const installationToken = await getInstallationToken(payload.installation.id);
 
-    console.log("Worker triggered via label!");
-  } catch (error) {
-    console.error("Error:", error.message);
-  }
+  // Trigger worker
+  await triggerWorker(payload, installationToken);
 });
 
-// Start the webhook receiver
+// Error handling
+app.webhooks.onError((error) => {
+  console.error("Webhook error:", error.message);
+});
+
+// Start the server
 async function start() {
   console.log("\n========================================");
-  console.log("  Claude Bot Webhook Handler");
+  console.log("  Self Healing Claude - Webhook Handler");
   console.log("========================================");
+  console.log(`App ID: ${CONFIG.APP_ID}`);
   console.log(`Trigger phrase: ${CONFIG.TRIGGER_PHRASE}`);
   console.log(`Worker repo: ${CONFIG.WORKER_REPO}`);
   console.log(`Smee URL: ${CONFIG.SMEE_URL}`);
   console.log("========================================\n");
 
   // Connect to smee.io for local development
-  const smee = new SmeeClient({
-    source: CONFIG.SMEE_URL,
-    target: "http://localhost:3000/webhook",
-    logger: console,
-  });
+  if (CONFIG.SMEE_URL && CONFIG.SMEE_URL !== "YOUR_SMEE_URL") {
+    const smee = new SmeeClient({
+      source: CONFIG.SMEE_URL,
+      target: "http://localhost:3000/webhook",
+      logger: console,
+    });
+    smee.start();
+  }
 
-  smee.start();
-
-  // Simple HTTP server to receive webhooks
-  const http = require("http");
+  // HTTP server to receive webhooks
   const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/webhook") {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", async () => {
         try {
-          const signature = req.headers["x-hub-signature-256"];
-          await webhooks.verifyAndReceive({
+          await app.webhooks.verifyAndReceive({
             id: req.headers["x-github-delivery"],
             name: req.headers["x-github-event"],
-            signature,
+            signature: req.headers["x-hub-signature-256"],
             payload: body,
           });
           res.writeHead(200);
           res.end("OK");
         } catch (error) {
-          console.error("Webhook error:", error.message);
+          console.error("Webhook verification error:", error.message);
           res.writeHead(400);
           res.end("Error");
         }
       });
     } else {
       res.writeHead(200);
-      res.end("Claude Bot is running!");
+      res.end("Self Healing Claude is running!");
     }
   });
 
   server.listen(3000, () => {
     console.log("Webhook server listening on http://localhost:3000");
-    console.log("\nWaiting for events...\n");
+    console.log("\nWaiting for @claude mentions...\n");
   });
 }
 
