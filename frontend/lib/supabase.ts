@@ -10,9 +10,15 @@ export function createBrowserClient() {
 
 // Server-side Supabase (uses service key for admin operations)
 export function createServerClient() {
+  // Use service key if available, otherwise fall back to anon key
+  const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+  const isServiceKey = !!process.env.SUPABASE_SERVICE_KEY;
+
+  console.log(`[createServerClient] Using ${isServiceKey ? 'service' : 'anon'} key`);
+
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_KEY!,
+    supabaseKey,
     {
       auth: {
         autoRefreshToken: false,

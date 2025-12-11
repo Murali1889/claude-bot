@@ -18,16 +18,27 @@ import { App } from "@octokit/app";
  */
 export async function executeFix(jobId: string): Promise<void> {
   console.log(`[executeFix] Starting for job ${jobId}`);
+
+  // Log Supabase configuration
+  console.log(`[executeFix] Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL}`);
+  console.log(`[executeFix] Service key exists: ${!!process.env.SUPABASE_SERVICE_KEY}`);
+  console.log(`[executeFix] Service key length: ${process.env.SUPABASE_SERVICE_KEY?.length}`);
+
   const supabase = createServerClient();
+  console.log(`[executeFix] Supabase client created successfully`);
 
   try {
     // Get job details first (while status is still 'pending')
-    console.log(`[executeFix] Fetching job details`);
+    console.log(`[executeFix] Fetching job details for jobId: ${jobId}`);
+    console.log(`[executeFix] About to execute Supabase query...`);
+
     const { data: job, error: jobError } = await supabase
       .from("fix_jobs")
       .select("*")
       .eq("id", jobId)
       .single();
+
+    console.log(`[executeFix] Supabase query completed`);
 
     if (jobError || !job) {
       console.error(`[executeFix] Job not found:`, jobError);
