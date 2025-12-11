@@ -1,0 +1,3 @@
+[submodule "claude-bot"]
+	path = claude-bot
+	url = https://github.com/Murali1889/claude-bot.git
