@@ -1,0 +1,17 @@
+{
+  "name": "claude-bot",
+  "version": "1.0.0",
+  "description": "GitHub App that uses Claude to fix code issues",
+  "main": "webhook-handler.js",
+  "scripts": {
+    "start": "node webhook-handler.js",
+    "dev": "node webhook-handler.js"
+  },
+  "dependencies": {
+    "@octokit/rest": "^20.0.2",
+    "@octokit/webhooks": "^12.0.10",
+    "smee-client": "^2.0.0"
+  },
+  "author": "Muralivvrsn",
+  "license": "MIT"
+}
