@@ -148,10 +148,6 @@ jobs:
           if [ -f "RCA.md" ]; then
             echo "✅ RCA created successfully"
             echo "rca_created=true" >> $GITHUB_OUTPUT
-
-            # Save RCA content for API update
-            RCA_CONTENT=$(cat RCA.md | jq -Rs .)
-            echo "rca_content=$RCA_CONTENT" >> $GITHUB_OUTPUT
           else
             echo "❌ RCA creation failed"
             echo "rca_created=false" >> $GITHUB_OUTPUT
@@ -160,13 +156,19 @@ jobs:
       - name: Update Status - RCA Completed
         if: steps.rca.outputs.rca_created == 'true'
         run: |
+          cd repo
+          # Create JSON payload file to avoid bash escaping issues
+          cat > /tmp/rca_payload.json <<EOF
+          {
+            "job_id": "${{ inputs.job_id }}",
+            "status": "rca_completed",
+            "rca": $(cat RCA.md | jq -Rs .)
+          }
+          EOF
+
           curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"job_id\": \"${{ inputs.job_id }}\",
-              \"status\": \"rca_completed\",
-              \"rca\": ${{ steps.rca.outputs.rca_content }}
-            }" || true
+            --data @/tmp/rca_payload.json || true
 
       # ========================================================================
       # PHASE 2: CODEBASE DOCUMENTATION
@@ -180,8 +182,6 @@ jobs:
           if [ -f "code_base.md" ]; then
             echo "✅ code_base.md already exists"
             echo "doc_exists=true" >> $GITHUB_OUTPUT
-            CODEBASE_DOC=$(cat code_base.md | jq -Rs .)
-            echo "doc_content=$CODEBASE_DOC" >> $GITHUB_OUTPUT
           else
             echo "📝 Creating code_base.md..."
 
@@ -235,8 +235,6 @@ jobs:
             if [ -f "code_base.md" ]; then
               echo "✅ code_base.md created"
               echo "doc_exists=true" >> $GITHUB_OUTPUT
-              CODEBASE_DOC=$(cat code_base.md | jq -Rs .)
-              echo "doc_content=$CODEBASE_DOC" >> $GITHUB_OUTPUT
             else
               echo "❌ code_base.md creation failed"
               echo "doc_exists=false" >> $GITHUB_OUTPUT
@@ -246,13 +244,19 @@ jobs:
       - name: Update Status - Documentation Checked
         if: steps.codebase_doc.outputs.doc_exists == 'true'
         run: |
+          cd repo
+          # Create JSON payload file to avoid bash escaping issues
+          cat > /tmp/doc_payload.json <<EOF
+          {
+            "job_id": "${{ inputs.job_id }}",
+            "status": "documentation_checked",
+            "codebase_doc": $(cat code_base.md | jq -Rs .)
+          }
+          EOF
+
           curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"job_id\": \"${{ inputs.job_id }}\",
-              \"status\": \"documentation_checked\",
-              \"codebase_doc\": ${{ steps.codebase_doc.outputs.doc_content }}
-            }" || true
+            --data @/tmp/doc_payload.json || true
 
       # ========================================================================
       # PHASE 3: CODE CHANGES
