@@ -104,15 +104,23 @@ export async function POST(request: NextRequest) {
     const supabase = createServerClient();
 
     // Verify installation exists and user owns it
+    console.log("Looking up installation_id:", installation_id, "type:", typeof installation_id);
     const { data: installation, error: installError } = await supabase
       .from("installations")
       .select("user_id, installation_id")
       .eq("installation_id", installation_id)
       .single();
 
+    console.log("Installation lookup result:", { installation, installError });
+
     if (installError || !installation) {
+      console.error("Installation not found:", installError);
       return NextResponse.json(
-        { error: "Installation not found" },
+        {
+          error: "Installation not found",
+          details: installError?.message,
+          installation_id: installation_id
+        },
         { status: 404 }
       );
     }
