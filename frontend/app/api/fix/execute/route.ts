@@ -27,18 +27,37 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(request: NextRequest) {
   try {
-    // Authenticate user
-    const user = await getSessionUser();
+    // Parse request body first
+    const body = await request.json();
 
-    if (!user) {
-      return NextResponse.json(
-        { error: "Unauthorized - Please login first" },
-        { status: 401 }
-      );
+    // Check for API key authentication (for programmatic access)
+    const authApiKey = request.headers.get("x-api-key");
+    const validApiKey = process.env.API_SECRET_KEY;
+
+    let userId: string;
+
+    if (authApiKey && validApiKey && authApiKey === validApiKey) {
+      // API key authentication - get user_id from request body
+      if (!body.user_id) {
+        return NextResponse.json(
+          { error: "user_id is required when using API key authentication" },
+          { status: 400 }
+        );
+      }
+      userId = body.user_id;
+    } else {
+      // Session-based authentication
+      const user = await getSessionUser();
+      if (!user) {
+        return NextResponse.json(
+          { error: "Unauthorized - Please login first or provide valid API key" },
+          { status: 401 }
+        );
+      }
+      userId = user.id;
     }
 
-    // Parse request body
-    const body = await request.json();
+    // Continue with request body parsing
     const {
       installation_id,
       repository_id,
@@ -98,7 +117,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (installation.user_id !== user.id) {
+    if (installation.user_id !== userId) {
       return NextResponse.json(
         {
           error: "Forbidden",
@@ -145,7 +164,7 @@ export async function POST(request: NextRequest) {
     const { data: job, error: jobError } = await supabase
       .from("fix_jobs")
       .insert({
-        user_id: user.id,
+        user_id: userId,
         installation_id: installation_id,
         repository_id: repository_id,
         repository_name: repoName,

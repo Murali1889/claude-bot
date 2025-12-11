@@ -34,8 +34,11 @@ const CONFIG = {
   // Problem to fix
   PROBLEM_STATEMENT: "Add error handling to the API endpoints",
 
-  // Optional: Add authentication if your API requires it
-  API_SECRET: "", // Leave empty if not needed
+  // User ID (from Supabase users table)
+  USER_ID: "26e33a9c-1c39-4dca-b0fc-3862cea6ae91",
+
+  // API authentication - required for programmatic access
+  API_SECRET: "sk-claude-bot-api-2025-12-12-secret-key-do-not-share",
 };
 
 // ============================================================================
@@ -49,6 +52,7 @@ async function triggerFix() {
   console.log("");
 
   const requestBody = {
+    user_id: CONFIG.USER_ID,
     installation_id: CONFIG.INSTALLATION_ID,
     repository_id: CONFIG.REPOSITORY_ID,
     repository_full_name: CONFIG.REPOSITORY_FULL_NAME,
@@ -59,9 +63,9 @@ async function triggerFix() {
     "Content-Type": "application/json",
   };
 
-  // Add authentication header if API secret is provided
+  // Add API key header if provided
   if (CONFIG.API_SECRET) {
-    headers["Authorization"] = `Bearer ${CONFIG.API_SECRET}`;
+    headers["x-api-key"] = CONFIG.API_SECRET;
   }
 
   try {
