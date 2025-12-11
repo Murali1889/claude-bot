@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
 type SetupStep = "loading" | "auth" | "setup" | "success" | "error" | "test";
@@ -22,6 +22,7 @@ function SetupContent() {
   const [testProblem, setTestProblem] = useState("");
   const [testResponse, setTestResponse] = useState("");
   const [isTesting, setIsTesting] = useState(false);
+  const oauthProcessed = useRef(false);
 
   // Check if user is authenticated
   useEffect(() => {
@@ -31,11 +32,12 @@ function SetupContent() {
       return;
     }
 
-    // Check for GitHub OAuth callback
+    // Check for GitHub OAuth callback (only process once)
     const code = searchParams.get("code");
-    if (code) {
+    if (code && !oauthProcessed.current) {
+      oauthProcessed.current = true;
       handleOAuthCallback(code);
-    } else {
+    } else if (!code) {
       // Check if already authenticated (via cookie/session)
       checkAuthStatus();
     }
@@ -59,6 +61,10 @@ function SetupContent() {
 
   async function handleOAuthCallback(code: string) {
     setStep("loading");
+
+    // Clean URL immediately to prevent re-using the code on refresh
+    window.history.replaceState({}, "", `/setup?installation_id=${installationId}`);
+
     try {
       const res = await fetch("/api/auth/github/callback", {
         method: "POST",
@@ -71,11 +77,15 @@ function SetupContent() {
       if (data.success) {
         setGithubUser(data.user);
         setStep("setup");
-        // Clean URL
-        window.history.replaceState({}, "", `/setup?installation_id=${installationId}`);
       } else {
-        setError(data.error || "Authentication failed");
-        setStep("error");
+        // If code expired/invalid, check if user is already authenticated
+        if (data.error?.includes("incorrect or expired")) {
+          // Try checking session - user might already be logged in
+          checkAuthStatus();
+        } else {
+          setError(data.error || "Authentication failed");
+          setStep("error");
+        }
       }
     } catch (err) {
       setError("Authentication failed");
