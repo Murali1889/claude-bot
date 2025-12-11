@@ -41,7 +41,28 @@ function SetupContent() {
       // Check if already authenticated (via cookie/session)
       checkAuthStatus();
     }
-  }, [installationId, searchParams]);
+  }, [installationId]);
+
+  // Verify installation exists
+  useEffect(() => {
+    async function verifyInstallation() {
+      if (!installationId) return;
+
+      try {
+        const res = await fetch(`/api/installation/verify?installation_id=${installationId}`);
+        const data = await res.json();
+
+        if (!data.exists) {
+          setError("Installation not found. Please reinstall the GitHub App.");
+          setStep("error");
+        }
+      } catch (err) {
+        // Silently ignore - we'll catch this in other places
+      }
+    }
+
+    verifyInstallation();
+  }, [installationId]);
 
   async function checkAuthStatus() {
     try {
@@ -219,6 +240,8 @@ function SetupContent() {
 
   // Error state
   if (step === "error") {
+    const isInstallationError = error?.includes("Installation not found") || error?.includes("not found");
+
     return (
       <main className="flex min-h-screen items-center justify-center p-8">
         <div className="max-w-md w-full bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 text-center">
@@ -227,12 +250,44 @@ function SetupContent() {
             Setup Error
           </h1>
           <p className="text-gray-600 dark:text-gray-300 mb-6">{error}</p>
-          <a
-            href="/"
-            className="inline-block bg-gray-900 dark:bg-white text-white dark:text-gray-900 px-6 py-2 rounded-lg hover:bg-gray-700 dark:hover:bg-gray-200 transition-colors"
-          >
-            Go Home
-          </a>
+
+          {isInstallationError ? (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                The GitHub App installation was not found in our system. This usually means the webhook wasn't received properly.
+              </p>
+              <a
+                href="https://github.com/apps/self-healing-claude/installations/new"
+                className="inline-block w-full bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+              >
+                Reinstall GitHub App
+              </a>
+              <button
+                onClick={() => window.location.reload()}
+                className="w-full bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white px-6 py-2 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+              >
+                Try Again
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <button
+                onClick={() => {
+                  setError(null);
+                  setStep("auth");
+                }}
+                className="w-full bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+              >
+                Try Again
+              </button>
+              <a
+                href="/"
+                className="inline-block w-full bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white px-6 py-2 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+              >
+                Go Home
+              </a>
+            </div>
+          )}
         </div>
       </main>
     );
