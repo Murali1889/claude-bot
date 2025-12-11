@@ -13,58 +13,32 @@ import { createServerClient } from "./supabase";
 import { decrypt } from "./encryption";
 import { App } from "@octokit/app";
 
+interface ExecuteFixParams {
+  jobId: string;
+  installationId: number;
+  repositoryFullName: string;
+  problemStatement: string;
+  encryptedKey: string;
+  keyIv: string;
+  keyAuthTag: string;
+}
+
 /**
  * Execute fix by triggering worker workflow
+ * Takes all needed data as parameters to avoid database queries
  */
-export async function executeFix(jobId: string): Promise<void> {
-  console.log(`[executeFix] Starting for job ${jobId}`);
+export async function executeFix(params: ExecuteFixParams): Promise<void> {
+  const { jobId, installationId, repositoryFullName, problemStatement, encryptedKey, keyIv, keyAuthTag } = params;
 
-  // Log Supabase configuration
-  console.log(`[executeFix] Supabase URL: ${process.env.NEXT_PUBLIC_SUPABASE_URL}`);
-  console.log(`[executeFix] Service key exists: ${!!process.env.SUPABASE_SERVICE_KEY}`);
-  console.log(`[executeFix] Service key length: ${process.env.SUPABASE_SERVICE_KEY?.length}`);
+  console.log(`[executeFix] Starting for job ${jobId}`);
+  console.log(`[executeFix] Repository: ${repositoryFullName}`);
+  console.log(`[executeFix] Installation: ${installationId}`);
 
   const supabase = createServerClient();
-  console.log(`[executeFix] Supabase client created successfully`);
 
   try {
-    // Get job details first (while status is still 'pending')
-    console.log(`[executeFix] Fetching job details for jobId: ${jobId}`);
-    console.log(`[executeFix] About to execute Supabase query...`);
-
-    const { data: job, error: jobError } = await supabase
-      .from("fix_jobs")
-      .select("*")
-      .eq("id", jobId)
-      .single();
-
-    console.log(`[executeFix] Supabase query completed`);
-
-    if (jobError || !job) {
-      console.error(`[executeFix] Job not found:`, jobError);
-      throw new Error("Job not found");
-    }
-    console.log(`[executeFix] Job found:`, {
-      installation_id: job.installation_id,
-      repository: job.repository_full_name,
-      problem: job.problem_statement.substring(0, 50) + '...'
-    });
-
-    // Get Claude token (decrypted)
-    console.log(`[executeFix] Fetching API key for installation ${job.installation_id}`);
-    const { data: apiKey, error: keyError } = await supabase
-      .from("api_keys")
-      .select("*")
-      .eq("installation_id", job.installation_id)
-      .single();
-
-    if (keyError || !apiKey) {
-      console.error(`[executeFix] Claude token not found:`, keyError);
-      throw new Error("Claude token not found");
-    }
-    console.log(`[executeFix] API key found, decrypting...`);
-
     // Decrypt token
+    console.log(`[executeFix] Decrypting API key...`);
     const encryptionKey = process.env.ENCRYPTION_KEY;
     if (!encryptionKey) {
       console.error(`[executeFix] ENCRYPTION_KEY not set`);
@@ -72,9 +46,9 @@ export async function executeFix(jobId: string): Promise<void> {
     }
 
     const token = decrypt(
-      apiKey.encrypted_key,
-      apiKey.key_iv,
-      apiKey.key_auth_tag,
+      encryptedKey,
+      keyIv,
+      keyAuthTag,
       encryptionKey
     );
     console.log(`[executeFix] Token decrypted successfully`);
@@ -82,9 +56,9 @@ export async function executeFix(jobId: string): Promise<void> {
     // Trigger worker workflow FIRST
     console.log(`[executeFix] Triggering worker workflow...`);
     await triggerWorkerWorkflow(
-      job.installation_id,
-      job.repository_full_name,
-      job.problem_statement,
+      installationId,
+      repositoryFullName,
+      problemStatement,
       token,
       jobId
     );

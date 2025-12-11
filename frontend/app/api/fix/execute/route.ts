@@ -136,9 +136,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify Claude token is configured for this installation
+    // Get encrypted key data so we can pass it to executeFix
     const { data: apiKey, error: keyError } = await supabase
       .from("api_keys")
-      .select("id, key_status")
+      .select("id, key_status, encrypted_key, key_iv, key_auth_tag")
       .eq("installation_id", installation_id)
       .single();
 
@@ -195,7 +196,16 @@ export async function POST(request: NextRequest) {
     }
 
     // Execute fix asynchronously (don't wait for completion)
-    executeFix(job.id).catch((error) => {
+    // Pass all needed data to avoid database queries in the background function
+    executeFix({
+      jobId: job.id,
+      installationId: installation_id,
+      repositoryFullName: repository_full_name,
+      problemStatement: problem_statement.trim(),
+      encryptedKey: apiKey.encrypted_key,
+      keyIv: apiKey.key_iv,
+      keyAuthTag: apiKey.key_auth_tag,
+    }).catch((error) => {
       console.error(`Error executing fix job ${job.id}:`, error);
     });
 
