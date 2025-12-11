@@ -22,18 +22,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Test the key with Anthropic API
+    // For OAuth tokens, just validate the format since Anthropic API doesn't support OAuth
+    // OAuth tokens are only used with Claude Code CLI
+    if (keyType === "oauth_token") {
+      if (!apiKey.startsWith("sk-ant-") || !apiKey.includes("-oat")) {
+        return NextResponse.json(
+          { valid: false, error: 'OAuth token should start with "sk-ant-oat"' },
+          { status: 400 }
+        );
+      }
+      // OAuth tokens can't be validated via API, they're only for Claude CLI
+      return NextResponse.json({
+        valid: true,
+        warning: "OAuth token format valid. Will be used with Claude Code CLI."
+      });
+    }
+
+    // Test the key with Anthropic API (API keys only)
     const headers: Record<string, string> = {
       "anthropic-version": "2023-06-01",
       "content-type": "application/json",
+      "x-api-key": apiKey,
     };
-
-    // Use appropriate auth header based on key type
-    if (keyType === "oauth_token") {
-      headers["Authorization"] = `Bearer ${apiKey}`;
-    } else {
-      headers["x-api-key"] = apiKey;
-    }
 
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",

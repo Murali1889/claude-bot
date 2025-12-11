@@ -14,18 +14,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Call Anthropic API directly
+    // OAuth tokens don't work with direct API calls - they're only for Claude CLI
+    if (keyType === "oauth_token") {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "OAuth tokens can only be used with Claude Code CLI, not direct API calls. Please use a regular API key for testing, or save this OAuth token and use it in GitHub issues."
+        },
+        { status: 400 }
+      );
+    }
+
+    // Call Anthropic API directly (API keys only)
     const headers: Record<string, string> = {
       "anthropic-version": "2023-06-01",
       "content-type": "application/json",
+      "x-api-key": apiKey,
     };
-
-    // Use appropriate auth header based on key type
-    if (keyType === "oauth_token") {
-      headers["Authorization"] = `Bearer ${apiKey}`;
-    } else {
-      headers["x-api-key"] = apiKey;
-    }
 
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
