@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
-type SetupStep = "loading" | "auth" | "setup" | "success" | "error";
+type SetupStep = "loading" | "auth" | "setup" | "success" | "error" | "test";
 
 function SetupContent() {
   const searchParams = useSearchParams();
@@ -19,6 +19,9 @@ function SetupContent() {
     login: string;
     avatar_url: string;
   } | null>(null);
+  const [testProblem, setTestProblem] = useState("");
+  const [testResponse, setTestResponse] = useState("");
+  const [isTesting, setIsTesting] = useState(false);
 
   // Check if user is authenticated
   useEffect(() => {
@@ -113,6 +116,40 @@ function SetupContent() {
       setError("Failed to validate API key");
       setIsValidating(false);
       return false;
+    }
+  }
+
+  async function handleTestClaude() {
+    if (!testProblem.trim()) {
+      setError("Please enter a problem description");
+      return;
+    }
+
+    setIsTesting(true);
+    setError(null);
+    setTestResponse("");
+
+    try {
+      const res = await fetch("/api/test-claude", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          installationId,
+          problemDescription: testProblem,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        setTestResponse(data.response);
+      } else {
+        setError(data.error || "Test failed");
+      }
+    } catch (err) {
+      setError("Failed to test Claude");
+    } finally {
+      setIsTesting(false);
     }
   }
 
@@ -220,29 +257,80 @@ function SetupContent() {
   if (step === "success") {
     return (
       <main className="flex min-h-screen items-center justify-center p-8">
-        <div className="max-w-md w-full bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 text-center">
-          <div className="text-green-500 text-5xl mb-4">&#10003;</div>
-          <h1 className="text-2xl font-bold mb-4 text-gray-900 dark:text-white">
-            Setup Complete!
-          </h1>
-          <p className="text-gray-600 dark:text-gray-300 mb-6">
-            Your API key has been saved. You can now use @claude in your GitHub
-            issues to get AI-powered fixes.
-          </p>
-          <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4 mb-6 text-left">
-            <p className="text-sm text-gray-600 dark:text-gray-300 mb-2">
-              Try it out:
+        <div className="max-w-2xl w-full bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
+          <div className="text-center mb-8">
+            <div className="text-green-500 text-5xl mb-4">&#10003;</div>
+            <h1 className="text-2xl font-bold mb-4 text-gray-900 dark:text-white">
+              Setup Complete!
+            </h1>
+            <p className="text-gray-600 dark:text-gray-300">
+              Your API key has been saved. You can now use @claude in your GitHub
+              issues to get AI-powered fixes.
             </p>
-            <code className="text-sm text-gray-800 dark:text-gray-200">
-              @claude fix this bug
-            </code>
           </div>
-          <a
-            href="https://github.com"
-            className="inline-block bg-gray-900 dark:bg-white text-white dark:text-gray-900 px-6 py-2 rounded-lg hover:bg-gray-700 dark:hover:bg-gray-200 transition-colors"
-          >
-            Go to GitHub
-          </a>
+
+          {/* Test Section */}
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-6 mt-6">
+            <h2 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">
+              Test Claude
+            </h2>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">
+              Enter a problem description to test if your API key is working:
+            </p>
+
+            <textarea
+              value={testProblem}
+              onChange={(e) => setTestProblem(e.target.value)}
+              placeholder="Describe a problem or bug you want Claude to help with... e.g., 'How do I fix a null pointer exception in Java?'"
+              className="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+              rows={4}
+            />
+
+            {error && (
+              <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+              </div>
+            )}
+
+            <button
+              onClick={handleTestClaude}
+              disabled={isTesting || !testProblem.trim()}
+              className="mt-4 w-full bg-purple-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+            >
+              {isTesting ? "Testing..." : "Test Claude"}
+            </button>
+
+            {testResponse && (
+              <div className="mt-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                  Claude's Response:
+                </h3>
+                <div className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">
+                  {testResponse}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Usage Instructions */}
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-6 mt-6">
+            <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4 text-left">
+              <p className="text-sm text-gray-600 dark:text-gray-300 mb-2">
+                Use in GitHub issues:
+              </p>
+              <code className="text-sm text-gray-800 dark:text-gray-200">
+                @claude fix this bug
+              </code>
+            </div>
+            <div className="mt-4 text-center">
+              <a
+                href="https://github.com"
+                className="inline-block bg-gray-900 dark:bg-white text-white dark:text-gray-900 px-6 py-2 rounded-lg hover:bg-gray-700 dark:hover:bg-gray-200 transition-colors"
+              >
+                Go to GitHub
+              </a>
+            </div>
+          </div>
         </div>
       </main>
     );
