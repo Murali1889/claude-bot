@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase";
 import { encrypt } from "@/lib/encryption";
 
+// Force dynamic rendering for this route
+export const dynamic = "force-dynamic";
+
 export async function POST(request: NextRequest) {
   try {
     const { installationId, apiKey, keyType } = await request.json();

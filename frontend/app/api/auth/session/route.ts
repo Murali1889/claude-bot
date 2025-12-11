@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase";
 
+// Force dynamic rendering for this route
+export const dynamic = "force-dynamic";
+
 export async function GET(request: NextRequest) {
   try {
     const installationId = request.nextUrl.searchParams.get("installation_id");

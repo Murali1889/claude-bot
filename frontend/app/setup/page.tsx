@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
 type SetupStep = "loading" | "auth" | "setup" | "success" | "error";
 
-export default function SetupPage() {
+function SetupContent() {
   const searchParams = useSearchParams();
   const installationId = searchParams.get("installation_id");
 
@@ -398,5 +398,26 @@ export default function SetupPage() {
         </p>
       </div>
     </main>
+  );
+}
+
+// Loading fallback for Suspense
+function SetupLoading() {
+  return (
+    <main className="flex min-h-screen items-center justify-center">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+        <p className="text-gray-600 dark:text-gray-300">Loading...</p>
+      </div>
+    </main>
+  );
+}
+
+// Main page component with Suspense boundary
+export default function SetupPage() {
+  return (
+    <Suspense fallback={<SetupLoading />}>
+      <SetupContent />
+    </Suspense>
   );
 }
