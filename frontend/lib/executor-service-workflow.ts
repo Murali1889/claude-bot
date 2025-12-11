@@ -21,18 +21,7 @@ export async function executeFix(jobId: string): Promise<void> {
   const supabase = createServerClient();
 
   try {
-    // Update job status to 'running'
-    console.log(`[executeFix] Updating job status to running`);
-    console.log(`[executeFix] Updating job status to running 2`);
-    await supabase
-      .from("fix_jobs")
-      .update({
-        status: "running",
-        started_at: new Date().toISOString(),
-      })
-      .eq("id", jobId);
-
-    // Get job details
+    // Get job details first (while status is still 'pending')
     console.log(`[executeFix] Fetching job details`);
     const { data: job, error: jobError } = await supabase
       .from("fix_jobs")
@@ -79,7 +68,7 @@ export async function executeFix(jobId: string): Promise<void> {
     );
     console.log(`[executeFix] Token decrypted successfully`);
 
-    // Trigger worker workflow
+    // Trigger worker workflow FIRST
     console.log(`[executeFix] Triggering worker workflow...`);
     await triggerWorkerWorkflow(
       job.installation_id,
@@ -90,6 +79,18 @@ export async function executeFix(jobId: string): Promise<void> {
     );
 
     console.log(`[executeFix] ✅ Worker workflow triggered successfully for job ${jobId}`);
+
+    // Update job status to 'running' AFTER workflow is successfully triggered
+    console.log(`[executeFix] Updating job status to running`);
+    await supabase
+      .from("fix_jobs")
+      .update({
+        status: "running",
+        started_at: new Date().toISOString(),
+      })
+      .eq("id", jobId);
+
+    console.log(`[executeFix] Job status updated to running`);
 
     // Job will be updated by webhook when workflow completes
   } catch (error) {
