@@ -17,10 +17,12 @@ import { App } from "@octokit/app";
  * Execute fix by triggering worker workflow
  */
 export async function executeFix(jobId: string): Promise<void> {
+  console.log(`[executeFix] Starting for job ${jobId}`);
   const supabase = createServerClient();
 
   try {
     // Update job status to 'running'
+    console.log(`[executeFix] Updating job status to running`);
     await supabase
       .from("fix_jobs")
       .update({
@@ -30,6 +32,7 @@ export async function executeFix(jobId: string): Promise<void> {
       .eq("id", jobId);
 
     // Get job details
+    console.log(`[executeFix] Fetching job details`);
     const { data: job, error: jobError } = await supabase
       .from("fix_jobs")
       .select("*")
@@ -37,10 +40,17 @@ export async function executeFix(jobId: string): Promise<void> {
       .single();
 
     if (jobError || !job) {
+      console.error(`[executeFix] Job not found:`, jobError);
       throw new Error("Job not found");
     }
+    console.log(`[executeFix] Job found:`, {
+      installation_id: job.installation_id,
+      repository: job.repository_full_name,
+      problem: job.problem_statement.substring(0, 50) + '...'
+    });
 
     // Get Claude token (decrypted)
+    console.log(`[executeFix] Fetching API key for installation ${job.installation_id}`);
     const { data: apiKey, error: keyError } = await supabase
       .from("api_keys")
       .select("*")
@@ -48,12 +58,15 @@ export async function executeFix(jobId: string): Promise<void> {
       .single();
 
     if (keyError || !apiKey) {
+      console.error(`[executeFix] Claude token not found:`, keyError);
       throw new Error("Claude token not found");
     }
+    console.log(`[executeFix] API key found, decrypting...`);
 
     // Decrypt token
     const encryptionKey = process.env.ENCRYPTION_KEY;
     if (!encryptionKey) {
+      console.error(`[executeFix] ENCRYPTION_KEY not set`);
       throw new Error("Encryption key not configured");
     }
 
@@ -63,8 +76,10 @@ export async function executeFix(jobId: string): Promise<void> {
       apiKey.key_auth_tag,
       encryptionKey
     );
+    console.log(`[executeFix] Token decrypted successfully`);
 
     // Trigger worker workflow
+    console.log(`[executeFix] Triggering worker workflow...`);
     await triggerWorkerWorkflow(
       job.installation_id,
       job.repository_full_name,
@@ -73,7 +88,7 @@ export async function executeFix(jobId: string): Promise<void> {
       jobId
     );
 
-    console.log(`Worker workflow triggered for job ${jobId}`);
+    console.log(`[executeFix] ✅ Worker workflow triggered successfully for job ${jobId}`);
 
     // Job will be updated by webhook when workflow completes
   } catch (error) {
@@ -104,51 +119,74 @@ async function triggerWorkerWorkflow(
   apiKey: string,
   jobId: string
 ): Promise<void> {
+  console.log(`[triggerWorkflow] Starting workflow trigger for job ${jobId}`);
+
   // Use Personal Access Token to trigger workflow in our own repository
   const githubToken = process.env.GITHUB_PAT;
 
   if (!githubToken) {
+    console.error(`[triggerWorkflow] GITHUB_PAT not configured`);
     throw new Error(
       "GITHUB_PAT not configured. Create a PAT at https://github.com/settings/tokens"
     );
   }
+  console.log(`[triggerWorkflow] GITHUB_PAT found: ${githubToken.substring(0, 10)}...`);
 
   // Worker repository details
   const workerOwner = process.env.WORKER_REPO_OWNER || "Muralivvrsn";
   const workerRepo = process.env.WORKER_REPO_NAME || "claude-bot-worker";
 
+  const workflowUrl = `https://api.github.com/repos/${workerOwner}/${workerRepo}/actions/workflows/fix-code.yml/dispatches`;
+  console.log(`[triggerWorkflow] Worker repo: ${workerOwner}/${workerRepo}`);
+  console.log(`[triggerWorkflow] Workflow URL: ${workflowUrl}`);
+  console.log(`[triggerWorkflow] Target repo: ${targetRepo}`);
+  console.log(`[triggerWorkflow] Installation ID: ${installationId}`);
+
+  const requestBody = {
+    ref: "main",
+    inputs: {
+      target_repo: targetRepo,
+      problem_statement: problemStatement,
+      installation_id: installationId.toString(),
+      job_id: jobId,
+      api_key: apiKey.substring(0, 20) + "...",
+    },
+  };
+  console.log(`[triggerWorkflow] Request body:`, JSON.stringify(requestBody, null, 2));
+
   // Trigger workflow_dispatch using fetch (simpler than Octokit for this)
-  const response = await fetch(
-    `https://api.github.com/repos/${workerOwner}/${workerRepo}/actions/workflows/fix-code.yml/dispatches`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
+  console.log(`[triggerWorkflow] Making POST request to GitHub API...`);
+  const response = await fetch(workflowUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${githubToken}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      ref: "main",
+      inputs: {
+        target_repo: targetRepo,
+        problem_statement: problemStatement,
+        installation_id: installationId.toString(),
+        job_id: jobId,
+        api_key: apiKey,
       },
-      body: JSON.stringify({
-        ref: "main",
-        inputs: {
-          target_repo: targetRepo,
-          problem_statement: problemStatement,
-          installation_id: installationId.toString(),
-          job_id: jobId,
-          api_key: apiKey,
-        },
-      }),
-    }
-  );
+    }),
+  });
+
+  console.log(`[triggerWorkflow] Response status: ${response.status} ${response.statusText}`);
 
   if (!response.ok) {
     const error = await response.text();
+    console.error(`[triggerWorkflow] ❌ Failed to trigger workflow:`, error);
     throw new Error(
       `Failed to trigger workflow: ${response.status} ${error}`
     );
   }
 
   console.log(
-    `Triggered workflow in ${workerOwner}/${workerRepo} for ${targetRepo}`
+    `[triggerWorkflow] ✅ Successfully triggered workflow in ${workerOwner}/${workerRepo} for ${targetRepo}`
   );
 }
