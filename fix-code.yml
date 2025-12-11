@@ -1,0 +1,503 @@
+# Enhanced Claude Bot Worker Workflow
+# Place this file in: claude-bot-worker/.github/workflows/fix-code.yml
+#
+# This workflow:
+# 1. Creates RCA (Root Cause Analysis)
+# 2. Checks/creates code_base.md
+# 3. Makes code changes
+# 4. Creates detailed PR with RCA
+
+name: Claude Fix Code - Enhanced
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'Target repository (owner/repo)'
+        required: true
+        type: string
+      problem_statement:
+        description: 'Problem to fix'
+        required: true
+        type: string
+      installation_id:
+        description: 'GitHub App installation ID'
+        required: true
+        type: string
+      job_id:
+        description: 'Job ID for tracking'
+        required: true
+        type: string
+      api_key:
+        description: 'Anthropic API key'
+        required: true
+        type: string
+
+env:
+  API_BASE_URL: https://claude-bot.vercel.app
+  ANTHROPIC_API_KEY: ${{ inputs.api_key }}
+
+jobs:
+  fix-code:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # ========================================================================
+      # SETUP
+      # ========================================================================
+
+      - name: Generate Installation Token
+        id: generate-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+          installation_retrieval_mode: id
+          installation_retrieval_payload: ${{ inputs.installation_id }}
+
+      - name: Clone Target Repository
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ inputs.target_repo }}.git" repo
+          cd repo
+          git config user.name "Claude Bot"
+          git config user.email "bot@claudebot.app"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      # ========================================================================
+      # PHASE 1: ROOT CAUSE ANALYSIS (RCA)
+      # ========================================================================
+
+      - name: Update Status - RCA Started
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"rca_started\"
+            }" || true
+
+      - name: Perform Root Cause Analysis
+        id: rca
+        run: |
+          cd repo
+
+          echo "🔍 Starting Root Cause Analysis..."
+
+          # Create RCA using Claude
+          claude -p "You are a senior software architect performing Root Cause Analysis.
+
+          ## Problem Statement
+          ${{ inputs.problem_statement }}
+
+          ## Your Task
+          Create a comprehensive RCA document in Markdown format with the following sections:
+
+          ### 1. Problem Summary
+          - What is the issue?
+          - Why is it important?
+
+          ### 2. Business Impact
+          - How does this affect users?
+          - What is the business value of fixing this?
+          - Priority level (P0/P1/P2/P3)
+
+          ### 3. Root Cause Analysis
+          - What is the underlying cause?
+          - When did this issue start?
+          - Why did it happen?
+
+          ### 4. Technical Analysis
+          - Which files are affected?
+          - What components/modules are involved?
+          - Dependencies or related systems
+
+          ### 5. Proposed Solution
+          - High-level approach
+          - Alternative solutions considered
+          - Why this solution is best
+
+          ### 6. Files to Change
+          List the specific files that need modification:
+          - file1.ts - Why
+          - file2.ts - Why
+
+          ### 7. Impact Assessment
+          - Breaking changes? Yes/No
+          - Database migrations needed? Yes/No
+          - API changes? Yes/No
+          - Testing requirements
+
+          Save this RCA as 'RCA.md' in the current directory.
+          " --dangerously-skip-permissions --max-turns 10 || true
+
+          # Check if RCA was created
+          if [ -f "RCA.md" ]; then
+            echo "✅ RCA created successfully"
+            echo "rca_created=true" >> $GITHUB_OUTPUT
+
+            # Save RCA content for API update
+            RCA_CONTENT=$(cat RCA.md | jq -Rs .)
+            echo "rca_content=$RCA_CONTENT" >> $GITHUB_OUTPUT
+          else
+            echo "❌ RCA creation failed"
+            echo "rca_created=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update Status - RCA Completed
+        if: steps.rca.outputs.rca_created == 'true'
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"rca_completed\",
+              \"rca\": ${{ steps.rca.outputs.rca_content }}
+            }" || true
+
+      # ========================================================================
+      # PHASE 2: CODEBASE DOCUMENTATION
+      # ========================================================================
+
+      - name: Check and Create Codebase Documentation
+        id: codebase_doc
+        run: |
+          cd repo
+
+          if [ -f "code_base.md" ]; then
+            echo "✅ code_base.md already exists"
+            echo "doc_exists=true" >> $GITHUB_OUTPUT
+            CODEBASE_DOC=$(cat code_base.md | jq -Rs .)
+            echo "doc_content=$CODEBASE_DOC" >> $GITHUB_OUTPUT
+          else
+            echo "📝 Creating code_base.md..."
+
+            # Create codebase documentation using Claude
+            claude -p "You are a documentation expert. Analyze this codebase and create a comprehensive 'code_base.md' file.
+
+            ## Your Task
+            Create a structured Markdown document with:
+
+            ### 1. Project Overview
+            - What is this project?
+            - Technology stack
+            - Main purpose
+
+            ### 2. Architecture
+            - High-level architecture diagram (ASCII art)
+            - Main components/modules
+            - Data flow
+
+            ### 3. Directory Structure
+            \`\`\`
+            /src
+              /components - React components
+              /services - Business logic
+              /utils - Helper functions
+              ...
+            \`\`\`
+
+            ### 4. Key Files and Their Purpose
+            List important files and what they do:
+            - \`src/index.ts\` - Entry point
+            - \`src/app.ts\` - Main application
+            - etc.
+
+            ### 5. Dependencies
+            - External libraries used
+            - Internal dependencies
+
+            ### 6. Common Patterns
+            - Code patterns used in this project
+            - Naming conventions
+            - Architecture patterns (MVC, etc.)
+
+            ### 7. Testing Strategy
+            - How tests are organized
+            - Testing frameworks used
+
+            Save this as 'code_base.md'.
+            " --dangerously-skip-permissions --max-turns 15 || true
+
+            if [ -f "code_base.md" ]; then
+              echo "✅ code_base.md created"
+              echo "doc_exists=true" >> $GITHUB_OUTPUT
+              CODEBASE_DOC=$(cat code_base.md | jq -Rs .)
+              echo "doc_content=$CODEBASE_DOC" >> $GITHUB_OUTPUT
+            else
+              echo "❌ code_base.md creation failed"
+              echo "doc_exists=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Update Status - Documentation Checked
+        if: steps.codebase_doc.outputs.doc_exists == 'true'
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"documentation_checked\",
+              \"codebase_doc\": ${{ steps.codebase_doc.outputs.doc_content }}
+            }" || true
+
+      # ========================================================================
+      # PHASE 3: CODE CHANGES
+      # ========================================================================
+
+      - name: Create Fix Branch
+        run: |
+          cd repo
+          BRANCH_NAME="claude-fix-$(date +%s)"
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          git checkout -b "$BRANCH_NAME"
+
+      - name: Update Status - Code Changes Started
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"code_changes_started\"
+            }" || true
+
+      - name: Make Code Changes
+        id: fix
+        run: |
+          cd repo
+
+          echo "🔨 Making code changes..."
+
+          # Read RCA and codebase docs if they exist
+          RCA_CONTEXT=""
+          if [ -f "RCA.md" ]; then
+            RCA_CONTEXT="Read RCA.md for the root cause analysis and solution approach."
+          fi
+
+          CODEBASE_CONTEXT=""
+          if [ -f "code_base.md" ]; then
+            CODEBASE_CONTEXT="Read code_base.md to understand the codebase structure."
+          fi
+
+          # Run Claude with context
+          claude -p "You are an expert software engineer. Fix the following issue:
+
+          ## Problem
+          ${{ inputs.problem_statement }}
+
+          ## Context
+          $RCA_CONTEXT
+          $CODEBASE_CONTEXT
+
+          ## Instructions
+          1. Read RCA.md (if exists) to understand the root cause and proposed solution
+          2. Read code_base.md (if exists) to understand the codebase structure
+          3. Make the necessary code changes following the RCA recommendations
+          4. Keep changes minimal and focused
+          5. Preserve existing code style and patterns
+          6. Add comments only where necessary
+          7. DO NOT modify RCA.md or code_base.md files
+
+          Please implement the fix now.
+          " --dangerously-skip-permissions --max-turns 20 || true
+
+      - name: Check for Changes
+        id: changes
+        run: |
+          cd repo
+
+          # Remove RCA.md and code_base.md from git tracking (don't commit them)
+          git reset RCA.md 2>/dev/null || true
+          git reset code_base.md 2>/dev/null || true
+
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "✅ Changes detected"
+
+            # Get list of changed files
+            CHANGED_FILES=$(git status --porcelain | awk '{print $2}' | jq -R -s -c 'split("\n")[:-1]')
+            echo "files_changed=$CHANGED_FILES" >> $GITHUB_OUTPUT
+
+            git status --short
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "❌ No changes made"
+          fi
+
+      - name: Update Status - Code Changes Completed
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"code_changes_completed\",
+              \"files_changed\": ${{ steps.changes.outputs.files_changed }}
+            }" || true
+
+      # ========================================================================
+      # PHASE 4: COMMIT AND PR
+      # ========================================================================
+
+      - name: Commit Changes
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          cd repo
+          git add -A
+
+          # Unstage documentation files
+          git reset RCA.md 2>/dev/null || true
+          git reset code_base.md 2>/dev/null || true
+
+          git commit -m "fix: ${{ inputs.problem_statement }}" || true
+
+      - name: Push Branch
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          cd repo
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ inputs.target_repo }}.git"
+          git push -u origin "$BRANCH_NAME"
+
+      - name: Create Enhanced Pull Request
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          cd repo
+
+          # Generate simple one-line title
+          PR_TITLE=$(echo "${{ inputs.problem_statement }}" | head -c 72)
+
+          # Read RCA content if exists
+          RCA_SECTION=""
+          if [ -f "RCA.md" ]; then
+            RCA_SECTION=$(cat RCA.md)
+          fi
+
+          # Get diff stats
+          DIFF_STATS=$(git diff HEAD~1 --stat)
+          CHANGED_FILES=$(git diff HEAD~1 --name-only)
+
+          # Create comprehensive PR description
+          PR_BODY="## 🤖 Automated Fix by Claude Bot
+
+          ### Problem Statement
+          ${{ inputs.problem_statement }}
+
+          ---
+
+          ## 📊 Root Cause Analysis
+
+          $RCA_SECTION
+
+          ---
+
+          ## 📝 Changes Made
+
+          ### Files Modified
+          \`\`\`
+          $CHANGED_FILES
+          \`\`\`
+
+          ### Diff Statistics
+          \`\`\`
+          $DIFF_STATS
+          \`\`\`
+
+          ---
+
+          ## ✅ Testing Checklist
+
+          - [ ] Code compiles without errors
+          - [ ] Existing tests pass
+          - [ ] New tests added (if applicable)
+          - [ ] Manual testing completed
+          - [ ] No breaking changes introduced
+
+          ---
+
+          **Job ID:** \`${{ inputs.job_id }}\`
+          **Branch:** \`$BRANCH_NAME\`
+          **Generated:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          "
+
+          # Create PR
+          PR_URL=$(gh pr create \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            --base main \
+            --head "$BRANCH_NAME" 2>&1 | tail -1)
+
+          echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+          echo "✅ Pull request created: $PR_URL"
+
+          # Extract PR number
+          PR_NUMBER=$(echo "$PR_URL" | grep -o '[0-9]*$')
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+
+      - name: Update Status - PR Created
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"pr_created\",
+              \"pr_url\": \"$PR_URL\",
+              \"pr_number\": $PR_NUMBER,
+              \"branch_name\": \"$BRANCH_NAME\"
+            }" || true
+
+      - name: Mark as Completed
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"completed\",
+              \"pr_url\": \"$PR_URL\",
+              \"pr_number\": $PR_NUMBER,
+              \"branch_name\": \"$BRANCH_NAME\"
+            }" || true
+
+      # ========================================================================
+      # ERROR HANDLING
+      # ========================================================================
+
+      - name: Report No Changes
+        if: steps.changes.outputs.has_changes == 'false'
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"failed\",
+              \"error_message\": \"Claude did not make any code changes\"
+            }" || true
+
+      - name: Report Failure
+        if: failure()
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"failed\",
+              \"error_message\": \"Workflow failed - check GitHub Actions logs\"
+            }" || true
