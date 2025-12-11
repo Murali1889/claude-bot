@@ -23,6 +23,7 @@ export async function executeFix(jobId: string): Promise<void> {
   try {
     // Update job status to 'running'
     console.log(`[executeFix] Updating job status to running`);
+    console.log(`[executeFix] Updating job status to running 2`);
     await supabase
       .from("fix_jobs")
       .update({
