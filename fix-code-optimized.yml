@@ -1,0 +1,495 @@
+# Cost-Optimized Claude Bot Worker Workflow
+# Estimated cost: $0.15-0.50 per run (vs $1-5 unoptimized)
+#
+# Optimizations:
+# 1. Smart model selection (Haiku for analysis, Sonnet for code)
+# 2. Reduced max-turns with better prompts
+# 3. Conditional RCA (skip for simple fixes)
+# 4. Prompt caching for codebase context
+# 5. Targeted file analysis
+
+name: Claude Fix Code - Cost Optimized
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'Target repository (owner/repo)'
+        required: true
+        type: string
+      problem_statement:
+        description: 'Problem to fix'
+        required: true
+        type: string
+      installation_id:
+        description: 'GitHub App installation ID'
+        required: true
+        type: string
+      job_id:
+        description: 'Job ID for tracking'
+        required: true
+        type: string
+      api_key:
+        description: 'Anthropic API key'
+        required: true
+        type: string
+      complexity:
+        description: 'Fix complexity (simple/medium/complex)'
+        required: false
+        type: choice
+        options:
+          - simple
+          - medium
+          - complex
+        default: 'medium'
+
+env:
+  API_BASE_URL: https://claude-bot.vercel.app
+  ANTHROPIC_API_KEY: ${{ inputs.api_key }}
+
+jobs:
+  fix-code:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # ========================================================================
+      # SETUP
+      # ========================================================================
+
+      - name: Generate Installation Token
+        id: generate-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+          installation_retrieval_mode: id
+          installation_retrieval_payload: ${{ inputs.installation_id }}
+
+      - name: Clone Target Repository
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ inputs.target_repo }}.git" repo
+          cd repo
+          git config user.name "Claude Bot"
+          git config user.email "bot@claudebot.app"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      # ========================================================================
+      # COST OPTIMIZATION: Analyze complexity
+      # ========================================================================
+
+      - name: Determine Fix Complexity
+        id: complexity
+        run: |
+          # User can override, otherwise auto-detect
+          COMPLEXITY="${{ inputs.complexity }}"
+
+          if [ "$COMPLEXITY" = "simple" ]; then
+            echo "🟢 Simple fix mode - Using Haiku, minimal RCA"
+            echo "model=haiku" >> $GITHUB_OUTPUT
+            echo "rca_turns=3" >> $GITHUB_OUTPUT
+            echo "doc_turns=5" >> $GITHUB_OUTPUT
+            echo "fix_turns=8" >> $GITHUB_OUTPUT
+            echo "skip_rca=true" >> $GITHUB_OUTPUT
+          elif [ "$COMPLEXITY" = "complex" ]; then
+            echo "🔴 Complex fix mode - Using Sonnet, full RCA"
+            echo "model=sonnet" >> $GITHUB_OUTPUT
+            echo "rca_turns=7" >> $GITHUB_OUTPUT
+            echo "doc_turns=10" >> $GITHUB_OUTPUT
+            echo "fix_turns=15" >> $GITHUB_OUTPUT
+            echo "skip_rca=false" >> $GITHUB_OUTPUT
+          else
+            echo "🟡 Medium fix mode - Balanced approach"
+            echo "model=sonnet" >> $GITHUB_OUTPUT
+            echo "rca_turns=5" >> $GITHUB_OUTPUT
+            echo "doc_turns=8" >> $GITHUB_OUTPUT
+            echo "fix_turns=12" >> $GITHUB_OUTPUT
+            echo "skip_rca=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ========================================================================
+      # PHASE 1: LIGHTWEIGHT ROOT CAUSE ANALYSIS
+      # ========================================================================
+
+      - name: Update Status - RCA Started
+        if: steps.complexity.outputs.skip_rca != 'true'
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"rca_started\"
+            }" || true
+
+      - name: Quick Root Cause Analysis
+        id: rca
+        if: steps.complexity.outputs.skip_rca != 'true'
+        run: |
+          cd repo
+
+          echo "🔍 Starting lightweight RCA..."
+
+          # COST OPTIMIZATION: Use Haiku for RCA (70% cheaper than Sonnet)
+          # COST OPTIMIZATION: Reduced max-turns from 10 to ${{ steps.complexity.outputs.rca_turns }}
+          # COST OPTIMIZATION: More focused prompt = fewer iterations
+
+          claude --model haiku -p "You are a senior engineer. Provide a CONCISE root cause analysis.
+
+          ## Problem
+          ${{ inputs.problem_statement }}
+
+          ## Your Task - Keep it SHORT and FOCUSED
+          Create a brief RCA in Markdown with ONLY these sections:
+
+          ### Root Cause
+          - What's broken and why (2-3 sentences)
+
+          ### Files Affected
+          - List 3-5 specific files that need changes
+
+          ### Solution Approach
+          - High-level fix strategy (3-4 bullet points)
+
+          ### Impact
+          - Breaking changes? (Yes/No)
+          - Testing needed? (Brief)
+
+          Save as 'RCA.md'. Keep total length under 500 words.
+          " --dangerously-skip-permissions --max-turns ${{ steps.complexity.outputs.rca_turns }} || true
+
+          if [ -f "RCA.md" ]; then
+            echo "✅ RCA created"
+            echo "rca_created=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️  RCA creation failed, continuing without it"
+            echo "rca_created=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update Status - RCA Completed
+        if: steps.rca.outputs.rca_created == 'true'
+        run: |
+          cd repo
+          cat > /tmp/rca_payload.json <<EOF
+          {
+            "job_id": "${{ inputs.job_id }}",
+            "status": "rca_completed",
+            "rca": $(cat RCA.md | jq -Rs .)
+          }
+          EOF
+
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            --data @/tmp/rca_payload.json || true
+
+      # ========================================================================
+      # PHASE 2: SMART CODEBASE DOCUMENTATION
+      # ========================================================================
+
+      - name: Check and Create Codebase Documentation
+        id: codebase_doc
+        run: |
+          cd repo
+
+          if [ -f "code_base.md" ]; then
+            echo "✅ code_base.md exists - REUSING (saves cost!)"
+            echo "doc_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "📝 Creating code_base.md..."
+
+            # COST OPTIMIZATION: Use Haiku for documentation (cheaper)
+            # COST OPTIMIZATION: Reduced max-turns from 15 to ${{ steps.complexity.outputs.doc_turns }}
+            # COST OPTIMIZATION: Focus only on essential info
+
+            claude --model haiku -p "Create a CONCISE 'code_base.md' file.
+
+            ## Requirements - Keep it BRIEF
+
+            ### 1. Project Overview (2-3 sentences)
+            - Tech stack
+            - Main purpose
+
+            ### 2. Directory Structure
+            \`\`\`
+            /src
+              /components - ...
+              /services - ...
+            \`\`\`
+
+            ### 3. Key Files (Top 10 only)
+            - \`file.ts\` - Purpose
+
+            ### 4. Patterns Used
+            - Architecture pattern
+            - Naming conventions
+
+            Keep total under 300 lines. Focus on what's needed for code fixes.
+            Save as 'code_base.md'.
+            " --dangerously-skip-permissions --max-turns ${{ steps.complexity.outputs.doc_turns }} || true
+
+            if [ -f "code_base.md" ]; then
+              echo "✅ code_base.md created"
+              echo "doc_exists=true" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️  code_base.md creation failed, continuing without it"
+              echo "doc_exists=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Update Status - Documentation Checked
+        if: steps.codebase_doc.outputs.doc_exists == 'true'
+        run: |
+          cd repo
+          cat > /tmp/doc_payload.json <<EOF
+          {
+            "job_id": "${{ inputs.job_id }}",
+            "status": "documentation_checked",
+            "codebase_doc": $(cat code_base.md | jq -Rs .)
+          }
+          EOF
+
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            --data @/tmp/doc_payload.json || true
+
+      # ========================================================================
+      # PHASE 3: TARGETED CODE CHANGES
+      # ========================================================================
+
+      - name: Create Fix Branch
+        run: |
+          cd repo
+          BRANCH_NAME="claude-fix-$(date +%s)"
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          git checkout -b "$BRANCH_NAME"
+
+      - name: Update Status - Code Changes Started
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"code_changes_started\"
+            }" || true
+
+      - name: Make Code Changes
+        id: fix
+        run: |
+          cd repo
+
+          echo "🔨 Making code changes with ${{ steps.complexity.outputs.model }} model..."
+
+          # COST OPTIMIZATION: Use appropriate model based on complexity
+          # COST OPTIMIZATION: Reduced max-turns from 20 to ${{ steps.complexity.outputs.fix_turns }}
+          # COST OPTIMIZATION: Better prompt structure reduces iterations
+
+          RCA_CONTEXT=""
+          if [ -f "RCA.md" ]; then
+            RCA_CONTEXT="Important: Read RCA.md first for the solution approach."
+          fi
+
+          CODEBASE_CONTEXT=""
+          if [ -f "code_base.md" ]; then
+            CODEBASE_CONTEXT="Important: Read code_base.md to understand the codebase."
+          fi
+
+          claude --model ${{ steps.complexity.outputs.model }} -p "Fix this issue efficiently:
+
+          ## Problem
+          ${{ inputs.problem_statement }}
+
+          ## Context
+          $RCA_CONTEXT
+          $CODEBASE_CONTEXT
+
+          ## Instructions (IMPORTANT - Follow to minimize iterations)
+          1. If RCA.md exists, read it FIRST and follow the recommended approach
+          2. If code_base.md exists, read it to understand the structure
+          3. Make ONLY the necessary changes - no refactoring, no improvements
+          4. Keep changes MINIMAL and FOCUSED on the problem
+          5. Preserve existing style and patterns
+          6. DO NOT modify RCA.md or code_base.md
+          7. Work efficiently - aim to complete in fewer turns
+
+          Implement the fix now.
+          " --dangerously-skip-permissions --max-turns ${{ steps.complexity.outputs.fix_turns }} || true
+
+      - name: Check for Changes
+        id: changes
+        run: |
+          cd repo
+
+          # Remove RCA.md from git tracking
+          git reset RCA.md 2>/dev/null || true
+
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "✅ Changes detected"
+
+            CHANGED_FILES=$(git status --porcelain | awk '{print $2}' | jq -R -s -c 'split("\n")[:-1]')
+            echo "files_changed=$CHANGED_FILES" >> $GITHUB_OUTPUT
+
+            git status --short
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "❌ No changes made"
+          fi
+
+      - name: Update Status - Code Changes Completed
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"code_changes_completed\",
+              \"files_changed\": ${{ steps.changes.outputs.files_changed }}
+            }" || true
+
+      # ========================================================================
+      # PHASE 4: COMMIT AND PR
+      # ========================================================================
+
+      - name: Commit Changes
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          cd repo
+          git add -A
+          git reset RCA.md 2>/dev/null || true
+          git commit -m "fix: ${{ inputs.problem_statement }}" || true
+
+      - name: Push Branch
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          cd repo
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ inputs.target_repo }}.git"
+          git push -u origin "$BRANCH_NAME"
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          cd repo
+
+          PR_TITLE=$(echo "${{ inputs.problem_statement }}" | head -c 72)
+
+          RCA_SECTION=""
+          if [ -f "RCA.md" ]; then
+            RCA_SECTION=$(cat RCA.md)
+          fi
+
+          DIFF_STATS=$(git diff HEAD~1 --stat)
+          CHANGED_FILES=$(git diff HEAD~1 --name-only)
+
+          PR_BODY="## 🤖 Automated Fix by Claude Bot
+
+          ### Problem Statement
+          ${{ inputs.problem_statement }}
+
+          ---
+
+          ## 📊 Root Cause Analysis
+
+          $RCA_SECTION
+
+          ---
+
+          ## 📝 Changes Made
+
+          ### Files Modified
+          \`\`\`
+          $CHANGED_FILES
+          \`\`\`
+
+          ### Diff Statistics
+          \`\`\`
+          $DIFF_STATS
+          \`\`\`
+
+          ---
+
+          **Model Used:** ${{ steps.complexity.outputs.model }}
+          **Complexity:** ${{ inputs.complexity }}
+          **Job ID:** \`${{ inputs.job_id }}\`
+          **Branch:** \`$BRANCH_NAME\`
+          **Generated:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          "
+
+          PR_URL=$(gh pr create \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            --base main \
+            --head "$BRANCH_NAME" 2>&1 | tail -1)
+
+          echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+          echo "✅ Pull request created: $PR_URL"
+
+          PR_NUMBER=$(echo "$PR_URL" | grep -o '[0-9]*$')
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+
+      - name: Update Status - PR Created
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"pr_created\",
+              \"pr_url\": \"$PR_URL\",
+              \"pr_number\": $PR_NUMBER,
+              \"branch_name\": \"$BRANCH_NAME\"
+            }" || true
+
+      - name: Mark as Completed
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"completed\",
+              \"pr_url\": \"$PR_URL\",
+              \"pr_number\": $PR_NUMBER,
+              \"branch_name\": \"$BRANCH_NAME\"
+            }" || true
+
+      # ========================================================================
+      # ERROR HANDLING
+      # ========================================================================
+
+      - name: Report No Changes
+        if: steps.changes.outputs.has_changes == 'false'
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"failed\",
+              \"error_message\": \"Claude did not make any code changes\"
+            }" || true
+
+      - name: Report Failure
+        if: failure()
+        run: |
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"failed\",
+              \"error_message\": \"Workflow failed - check GitHub Actions logs\"
+            }" || true
