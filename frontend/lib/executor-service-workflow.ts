@@ -159,43 +159,6 @@ async function triggerWorkerWorkflow(
   };
   console.log(`[triggerWorkflow] Request body:`, JSON.stringify(requestBody, null, 2));
 
-  // Pre-check: Verify workflow file exists (with timeout)
-  console.log(`[triggerWorkflow] Verifying workflow file exists...`);
-  const checkUrl = `https://api.github.com/repos/${workerOwner}/${workerRepo}/contents/.github/workflows/${workflowFile}`;
-  try {
-    const checkController = new AbortController();
-    const checkTimeout = setTimeout(() => checkController.abort(), 5000); // 5 second timeout for pre-check
-
-    const checkResponse = await fetch(checkUrl, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-      },
-      signal: checkController.signal,
-    });
-
-    clearTimeout(checkTimeout);
-
-    if (checkResponse.status === 404) {
-      console.error(`[triggerWorkflow] ❌ Workflow file not found at: .github/workflows/${workflowFile}`);
-      throw new Error(
-        `Workflow file 'fix-code.yml' not found in ${workerOwner}/${workerRepo}. Please create .github/workflows/fix-code.yml in the worker repository.`
-      );
-    } else if (!checkResponse.ok) {
-      console.warn(`[triggerWorkflow] ⚠️ Could not verify workflow file (${checkResponse.status}), continuing anyway...`);
-    } else {
-      console.log(`[triggerWorkflow] ✅ Workflow file exists`);
-    }
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      console.warn(`[triggerWorkflow] ⚠️ Pre-check timed out after 5s, skipping verification...`);
-    } else {
-      console.warn(`[triggerWorkflow] ⚠️ Pre-check failed:`, error instanceof Error ? error.message : 'Unknown error');
-    }
-    // Continue anyway - pre-check is not critical
-  }
-
   // Trigger workflow_dispatch using fetch with timeout
   console.log(`[triggerWorkflow] Making POST request to GitHub API...`);
   console.log(`[triggerWorkflow] URL: ${workflowUrl}`);
