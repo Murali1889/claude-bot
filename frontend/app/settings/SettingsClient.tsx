@@ -8,6 +8,7 @@ interface User {
   github_username: string;
   email: string | null;
   avatar_url: string | null;
+  gitrepo?: string | null;
 }
 
 interface Installation {
@@ -42,6 +43,13 @@ export default function SettingsClient({ user }: Props) {
   const [loading, setLoading] = useState(true);
   const [selectedInstallation, setSelectedInstallation] = useState<number | null>(null);
 
+  // Repository state
+  const [repositories, setRepositories] = useState<Array<{ id: number; name: string; full_name: string }>>([]);
+  const [selectedRepo, setSelectedRepo] = useState<string>("");
+  const [currentGitRepo, setCurrentGitRepo] = useState<string | null>(null);
+  const [loadingRepos, setLoadingRepos] = useState(false);
+  const [savingRepo, setSavingRepo] = useState(false);
+
   // Form state
   const [token, setToken] = useState("");
   const [tokenType, setTokenType] = useState<"claude_code_token" | "anthropic_api_key">(
@@ -54,7 +62,15 @@ export default function SettingsClient({ user }: Props) {
   // Fetch installations and tokens
   useEffect(() => {
     fetchData();
+    fetchCurrentRepo();
   }, []);
+
+  // Fetch repositories when installation is selected
+  useEffect(() => {
+    if (selectedInstallation) {
+      fetchRepositories(selectedInstallation);
+    }
+  }, [selectedInstallation]);
 
   const fetchData = async () => {
     try {
@@ -81,6 +97,62 @@ export default function SettingsClient({ user }: Props) {
       setError("Failed to load settings");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchCurrentRepo = async () => {
+    try {
+      const response = await fetch("/api/user/update-repo");
+      const data = await response.json();
+      setCurrentGitRepo(data.gitrepo);
+      setSelectedRepo(data.gitrepo || "");
+    } catch (err) {
+      console.error("Error fetching current repo:", err);
+    }
+  };
+
+  const fetchRepositories = async (installationId: number) => {
+    try {
+      setLoadingRepos(true);
+      const response = await fetch(`/api/installations/${installationId}/repositories`);
+      const data = await response.json();
+      setRepositories(data.repositories || []);
+    } catch (err) {
+      console.error("Error fetching repositories:", err);
+    } finally {
+      setLoadingRepos(false);
+    }
+  };
+
+  const handleSaveRepository = async () => {
+    if (!selectedRepo) {
+      setError("Please select a repository");
+      return;
+    }
+
+    setSavingRepo(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const response = await fetch("/api/user/update-repo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gitrepo: selectedRepo }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to update repository");
+      }
+
+      setSuccess("Repository updated successfully!");
+      setCurrentGitRepo(selectedRepo);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update repository");
+    } finally {
+      setSavingRepo(false);
     }
   };
 
@@ -140,6 +212,95 @@ export default function SettingsClient({ user }: Props) {
 
   return (
     <div className="space-y-8">
+      {/* Repository Selection */}
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6">
+        <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+          Default Repository
+        </h2>
+
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+          Select the repository you want to work with by default
+        </p>
+
+        <div className="space-y-4">
+          {/* Installation Selection */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Select Installation
+            </label>
+            <select
+              value={selectedInstallation || ""}
+              onChange={(e) => setSelectedInstallation(Number(e.target.value))}
+              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">Choose installation...</option>
+              {installations.map((inst) => (
+                <option key={inst.id} value={inst.id}>
+                  {inst.account.login} ({inst.account.type})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Repository Selection */}
+          {selectedInstallation && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Select Repository
+              </label>
+              {loadingRepos ? (
+                <div className="flex items-center justify-center py-4">
+                  <div className="animate-spin rounded-full h-6 w-6 border-2 border-blue-500 border-t-transparent"></div>
+                </div>
+              ) : (
+                <select
+                  value={selectedRepo}
+                  onChange={(e) => setSelectedRepo(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Choose repository...</option>
+                  {repositories.map((repo) => (
+                    <option key={repo.id} value={repo.full_name}>
+                      {repo.full_name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+
+          {currentGitRepo && (
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3">
+              <p className="text-sm text-blue-700 dark:text-blue-300">
+                <span className="font-medium">Current: </span>
+                {currentGitRepo}
+              </p>
+            </div>
+          )}
+
+          {/* Error/Success Messages */}
+          {error && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+              <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+            </div>
+          )}
+
+          {success && (
+            <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
+              <p className="text-sm text-green-600 dark:text-green-400">{success}</p>
+            </div>
+          )}
+
+          <button
+            onClick={handleSaveRepository}
+            disabled={savingRepo || !selectedRepo}
+            className="w-full bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+          >
+            {savingRepo ? "Saving..." : "Save Repository"}
+          </button>
+        </div>
+      </div>
+
       {/* Token Configuration */}
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6">
         <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
