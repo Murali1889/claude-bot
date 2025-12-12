@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { Suspense } from "react";
 
 /**
  * GitHub App Installation Redirect Handler
@@ -9,7 +10,7 @@ import { useSearchParams, useRouter } from "next/navigation";
  * This page is shown after installing the GitHub App.
  * It captures the installation and redirects to dashboard.
  */
-export default function SetupPage() {
+function SetupContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
@@ -109,5 +110,17 @@ export default function SetupPage() {
         )}
       </div>
     </main>
+  );
+}
+
+export default function SetupPage() {
+  return (
+    <Suspense fallback={
+      <main className="flex min-h-screen flex-col items-center justify-center p-8 bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
+        <div className="animate-spin rounded-full h-16 w-16 border-4 border-blue-500 border-t-transparent"></div>
+      </main>
+    }>
+      <SetupContent />
+    </Suspense>
   );
 }
