@@ -107,8 +107,17 @@ export async function GET(request: NextRequest) {
     // Create secure session
     await createSession(user.id);
 
-    // Redirect to dashboard
-    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard`);
+    // Check for callback URL from login flow
+    const callbackUrl = cookieStore.get("oauth_callback")?.value;
+
+    // Delete callback cookie (one-time use)
+    if (callbackUrl) {
+      cookieStore.delete("oauth_callback");
+    }
+
+    // Redirect to callback URL or default to dashboard
+    const redirectUrl = callbackUrl || "/dashboard";
+    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}${redirectUrl}`);
   } catch (error) {
     console.error("OAuth callback error:", error);
     return NextResponse.redirect(

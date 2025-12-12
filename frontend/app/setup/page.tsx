@@ -49,6 +49,13 @@ function SetupContent() {
           setTimeout(() => {
             router.push("/dashboard");
           }, 1000);
+        } else if (response.status === 401) {
+          // Not logged in - redirect to login with callback
+          setMessage("Please login first...");
+          setTimeout(() => {
+            const callbackUrl = encodeURIComponent(`/setup?installation_id=${installation_id}&setup_action=${setup_action || "install"}`);
+            window.location.href = `/api/auth/login?callback=${callbackUrl}`;
+          }, 1000);
         } else {
           setStatus("error");
           setMessage(data.error || "Failed to capture installation");

@@ -19,6 +19,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Get callback URL from query params (for post-login redirect)
+    const { searchParams } = new URL(request.url);
+    const callbackUrl = searchParams.get("callback");
+
     // Generate random state for CSRF protection
     const state = generateToken();
 
@@ -31,6 +35,17 @@ export async function GET(request: NextRequest) {
       sameSite: "lax",
       path: "/",
     });
+
+    // Store callback URL in cookie if provided
+    if (callbackUrl) {
+      cookieStore.set("oauth_callback", callbackUrl, {
+        maxAge: 60 * 10, // 10 minutes
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        path: "/",
+      });
+    }
 
     // Build GitHub OAuth URL
     const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/callback`;
