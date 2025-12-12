@@ -22,6 +22,10 @@ interface ExecuteFixParams {
   encryptedKey: string;
   keyIv: string;
   keyAuthTag: string;
+  userRca?: string;
+  regeneration?: boolean;
+  imageUrls?: string[];
+  screenshotsBase64?: string[];
 }
 
 /**
@@ -29,7 +33,7 @@ interface ExecuteFixParams {
  * Takes all needed data as parameters to avoid database queries
  */
 export async function executeFix(params: ExecuteFixParams): Promise<void> {
-  const { jobId, installationId, repositoryFullName, problemStatement, complexity, encryptedKey, keyIv, keyAuthTag } = params;
+  const { jobId, installationId, repositoryFullName, problemStatement, complexity, encryptedKey, keyIv, keyAuthTag, userRca, regeneration, imageUrls, screenshotsBase64 } = params;
 
   console.log(`[executeFix] Starting for job ${jobId}`);
   console.log(`[executeFix] Repository: ${repositoryFullName}`);
@@ -62,7 +66,11 @@ export async function executeFix(params: ExecuteFixParams): Promise<void> {
       problemStatement,
       token,
       jobId,
-      complexity || 'medium'
+      complexity || 'medium',
+      userRca,
+      regeneration,
+      imageUrls,
+      screenshotsBase64
     );
 
     console.log(`[executeFix] ✅ Worker workflow triggered successfully for job ${jobId}`);
@@ -107,7 +115,11 @@ async function triggerWorkerWorkflow(
   problemStatement: string,
   apiKey: string,
   jobId: string,
-  complexity: string = 'medium'
+  complexity: string = 'medium',
+  userRca?: string,
+  regeneration?: boolean,
+  imageUrls?: string[],
+  screenshotsBase64?: string[]
 ): Promise<void> {
   console.log(`[triggerWorkflow] Starting workflow trigger for job ${jobId}`);
 
@@ -126,11 +138,14 @@ async function triggerWorkerWorkflow(
   const workerOwner = process.env.WORKER_REPO_OWNER || "Muralivvrsn";
   const workerRepo = process.env.WORKER_REPO_NAME || "claude-bot-worker";
 
-  const workflowUrl = `https://api.github.com/repos/${workerOwner}/${workerRepo}/actions/workflows/fix-code.yml/dispatches`;
+  // Use the workflow file (fix-code.yml in worker repo)
+  const workflowFile = 'fix-code.yml';
+  const workflowUrl = `https://api.github.com/repos/${workerOwner}/${workerRepo}/actions/workflows/${workflowFile}/dispatches`;
   console.log(`[triggerWorkflow] Worker repo: ${workerOwner}/${workerRepo}`);
   console.log(`[triggerWorkflow] Workflow URL: ${workflowUrl}`);
   console.log(`[triggerWorkflow] Target repo: ${targetRepo}`);
   console.log(`[triggerWorkflow] Installation ID: ${installationId}`);
+  console.log(`[triggerWorkflow] Regeneration: ${regeneration || false}`);
 
   const requestBody = {
     ref: "main",
@@ -144,11 +159,16 @@ async function triggerWorkerWorkflow(
   };
   console.log(`[triggerWorkflow] Request body:`, JSON.stringify(requestBody, null, 2));
 
-  // Trigger workflow_dispatch using fetch (simpler than Octokit for this)
+  // Trigger workflow_dispatch using fetch with timeout
   console.log(`[triggerWorkflow] Making POST request to GitHub API...`);
+  console.log(`[triggerWorkflow] URL: ${workflowUrl}`);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
   let response;
   try {
+    console.log(`[triggerWorkflow] Sending request with body...`);
     response = await fetch(workflowUrl, {
       method: "POST",
       headers: {
@@ -166,13 +186,29 @@ async function triggerWorkerWorkflow(
           job_id: jobId,
           api_key: apiKey,
           complexity: complexity,
+          user_rca: userRca || '',
+          regeneration: regeneration ? 'true' : 'false',
+          image_urls: imageUrls ? imageUrls.join(',') : '',
+          screenshots_base64: screenshotsBase64 ? JSON.stringify(screenshotsBase64) : '[]',
         },
       }),
+      signal: controller.signal,
     });
 
-    console.log(`[triggerWorkflow] ✅ Response status: ${response.status} ${response.statusText}`);
+    clearTimeout(timeoutId);
+    console.log(`[triggerWorkflow] ✅ Response received: ${response.status} ${response.statusText}`);
   } catch (fetchError) {
+    clearTimeout(timeoutId);
+    if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+      console.error(`[triggerWorkflow] ❌ Request timeout after 30 seconds`);
+      throw new Error('GitHub API request timeout - workflow trigger took too long');
+    }
     console.error(`[triggerWorkflow] ❌ Fetch error:`, fetchError);
+    console.error(`[triggerWorkflow] Error details:`, {
+      name: fetchError instanceof Error ? fetchError.name : 'Unknown',
+      message: fetchError instanceof Error ? fetchError.message : String(fetchError),
+      stack: fetchError instanceof Error ? fetchError.stack : undefined,
+    });
     throw new Error(`Failed to make request to GitHub API: ${fetchError instanceof Error ? fetchError.message : 'Unknown error'}`);
   }
 

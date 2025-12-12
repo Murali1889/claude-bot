@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { createBrowserClient } from "@/lib/supabase";
+import RCAEditor from "./RCAEditor";
 
 interface User {
   id: string;
@@ -27,6 +28,9 @@ interface FixJob {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  user_edited_rca: string | null;
+  rca_edited: boolean;
+  regeneration_count: number;
 }
 
 interface Props {
@@ -50,6 +54,7 @@ export default function DashboardClient({ user }: Props) {
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [updatedJobs, setUpdatedJobs] = useState<Set<string>>(new Set());
   const [hasInstallations, setHasInstallations] = useState<boolean | null>(null);
+  const [editingRca, setEditingRca] = useState<{ jobId: string; rca: string } | null>(null);
 
   useEffect(() => {
     fetchJobs();
@@ -147,8 +152,31 @@ export default function DashboardClient({ user }: Props) {
   );
   const failedJobs = jobs.filter((j) => j.status === "failed");
 
+  const handleEditRca = (jobId: string, rca: string) => {
+    setEditingRca({ jobId, rca });
+  };
+
+  const handleCloseRcaEditor = () => {
+    setEditingRca(null);
+  };
+
+  const handleRegenerateComplete = () => {
+    // Refresh jobs to show updated status
+    fetchJobs();
+  };
+
   return (
     <div className="space-y-6">
+      {/* RCA Editor Modal */}
+      {editingRca && (
+        <RCAEditor
+          jobId={editingRca.jobId}
+          originalRca={editingRca.rca}
+          onClose={handleCloseRcaEditor}
+          onRegenerate={handleRegenerateComplete}
+        />
+      )}
+
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-6">
@@ -324,6 +352,7 @@ export default function DashboardClient({ user }: Props) {
                   setSelectedJob(selectedJob === job.id ? null : job.id)
                 }
                 getStageIndex={getStageIndex}
+                onEditRca={handleEditRca}
               />
             ))}
             {jobs.length > 5 && (
@@ -349,6 +378,7 @@ function JobCard({
   isUpdated,
   onSelect,
   getStageIndex,
+  onEditRca,
 }: any) {
   const isFinished = ["completed", "failed"].includes(job.status);
 
@@ -389,9 +419,25 @@ function JobCard({
 
             {job.rca && (
               <div>
-                <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
-                  Root Cause Analysis
-                </h4>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                    Root Cause Analysis
+                    {job.rca_edited && (
+                      <span className="ml-2 px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 text-xs rounded">
+                        Edited {job.regeneration_count > 0 && `(${job.regeneration_count}x)`}
+                      </span>
+                    )}
+                  </h4>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditRca(job.id, job.rca);
+                    }}
+                    className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                  >
+                    Edit RCA
+                  </button>
+                </div>
                 <div className="prose prose-sm prose-slate dark:prose-invert max-w-none bg-gray-50 dark:bg-gray-900/50 rounded p-3 text-xs max-h-64 overflow-y-auto">
                   <ReactMarkdown>{job.rca}</ReactMarkdown>
                 </div>
