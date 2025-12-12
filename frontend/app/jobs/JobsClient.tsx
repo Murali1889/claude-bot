@@ -31,33 +31,42 @@ interface Props {
   user: User;
 }
 
+const STATUS_STAGES = [
+  { key: "pending", label: "Queued", icon: "⏳" },
+  { key: "rca_started", label: "Analyzing", icon: "🔍" },
+  { key: "rca_completed", label: "RCA Done", icon: "📋" },
+  { key: "documentation_checked", label: "Docs Ready", icon: "📚" },
+  { key: "code_changes_started", label: "Coding", icon: "⚡" },
+  { key: "code_changes_completed", label: "Code Done", icon: "✨" },
+  { key: "pr_created", label: "PR Created", icon: "🎉" },
+  { key: "completed", label: "Complete", icon: "✅" },
+  { key: "failed", label: "Failed", icon: "❌" },
+];
+
 export default function JobsClient({ user }: Props) {
   const [jobs, setJobs] = useState<FixJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
+  const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [updatedJobs, setUpdatedJobs] = useState<Set<string>>(new Set()); // Track which jobs were just updated
-  const [notifications, setNotifications] = useState<Array<{ id: string; message: string }>>([]);
+  const [updatedJobs, setUpdatedJobs] = useState<Set<string>>(new Set());
+  const [notifications, setNotifications] = useState<Array<{ id: string; message: string; type: string }>>([]);
 
   useEffect(() => {
     fetchJobs();
 
-    // Set up Supabase real-time subscription
     const supabase = createBrowserClient();
-
     const channel = supabase
       .channel('fix_jobs_changes')
       .on(
         'postgres_changes',
         {
-          event: '*', // Listen to all events (INSERT, UPDATE, DELETE)
+          event: '*',
           schema: 'public',
           table: 'fix_jobs',
-          filter: `user_id=eq.${user.id}`, // Only subscribe to this user's jobs
+          filter: `user_id=eq.${user.id}`,
         },
         (payload) => {
-          console.log('Real-time update:', payload);
           handleRealtimeUpdate(payload);
         }
       )
@@ -68,7 +77,6 @@ export default function JobsClient({ user }: Props) {
     };
   }, [user.id]);
 
-  // Refetch when filter changes
   useEffect(() => {
     fetchJobs();
   }, [statusFilter]);
@@ -76,15 +84,11 @@ export default function JobsClient({ user }: Props) {
   const handleRealtimeUpdate = (payload: any) => {
     const eventType = payload.eventType;
     const newJob = payload.new as FixJob;
-    const oldJob = payload.old as FixJob;
 
     if (eventType === 'INSERT') {
-      // New job created
       setJobs((prev) => [newJob, ...prev]);
       setUpdatedJobs((prev) => new Set(prev).add(newJob.id));
-      showNotification(newJob.id, `New job created: ${newJob.problem_statement.substring(0, 50)}...`);
-
-      // Remove highlight after 3 seconds
+      showNotification(`New job created`, 'info');
       setTimeout(() => {
         setUpdatedJobs((prev) => {
           const next = new Set(prev);
@@ -93,22 +97,17 @@ export default function JobsClient({ user }: Props) {
         });
       }, 3000);
     } else if (eventType === 'UPDATE') {
-      // Job updated
       setJobs((prev) =>
         prev.map((job) => (job.id === newJob.id ? newJob : job))
       );
       setUpdatedJobs((prev) => new Set(prev).add(newJob.id));
 
-      // Show notification for important status changes
       if (newJob.status === 'completed') {
-        showNotification(newJob.id, `✅ Job completed! PR created.`);
+        showNotification(`Job completed successfully`, 'success');
       } else if (newJob.status === 'failed') {
-        showNotification(newJob.id, `❌ Job failed: ${newJob.error_message || 'Unknown error'}`);
-      } else if (newJob.status === 'rca_completed') {
-        showNotification(newJob.id, `🔍 RCA completed`);
+        showNotification(`Job failed`, 'error');
       }
 
-      // Remove highlight after 3 seconds
       setTimeout(() => {
         setUpdatedJobs((prev) => {
           const next = new Set(prev);
@@ -116,37 +115,23 @@ export default function JobsClient({ user }: Props) {
           return next;
         });
       }, 3000);
-    } else if (eventType === 'DELETE') {
-      // Job deleted
-      setJobs((prev) => prev.filter((job) => job.id !== oldJob.id));
     }
   };
 
-  const showNotification = (id: string, message: string) => {
-    const notifId = `${id}-${Date.now()}`;
-    setNotifications((prev) => [...prev, { id: notifId, message }]);
-
-    // Remove notification after 5 seconds
+  const showNotification = (message: string, type: string) => {
+    const notifId = `${Date.now()}`;
+    setNotifications((prev) => [...prev, { id: notifId, message, type }]);
     setTimeout(() => {
       setNotifications((prev) => prev.filter((n) => n.id !== notifId));
-    }, 5000);
+    }, 4000);
   };
 
   const fetchJobs = async () => {
     try {
       setError(null);
-
-      const url =
-        statusFilter === "all"
-          ? "/api/fix/jobs"
-          : `/api/fix/jobs?status=${statusFilter}`;
-
+      const url = statusFilter === "all" ? "/api/fix/jobs" : `/api/fix/jobs?status=${statusFilter}`;
       const response = await fetch(url);
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch jobs");
-      }
-
+      if (!response.ok) throw new Error("Failed to fetch jobs");
       const data = await response.json();
       setJobs(data.jobs || []);
     } catch (err) {
@@ -156,79 +141,8 @@ export default function JobsClient({ user }: Props) {
     }
   };
 
-  const toggleJob = (jobId: string) => {
-    const newExpanded = new Set(expandedJobs);
-    if (newExpanded.has(jobId)) {
-      newExpanded.delete(jobId);
-    } else {
-      newExpanded.add(jobId);
-    }
-    setExpandedJobs(newExpanded);
-  };
-
-  const getStatusColor = (status: string) => {
-    const colors: Record<string, string> = {
-      pending: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300",
-      rca_started: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-      rca_completed: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-      documentation_checked: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
-      code_changes_started: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
-      code_changes_completed: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
-      pr_created: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-      running: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-      completed: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-      failed: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
-    };
-    return colors[status] || "bg-gray-100 text-gray-800";
-  };
-
-  const getStatusIcon = (status: string) => {
-    if (status === "completed") {
-      return (
-        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-          <path
-            fillRule="evenodd"
-            d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-            clipRule="evenodd"
-          />
-        </svg>
-      );
-    }
-    if (status === "failed") {
-      return (
-        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-          <path
-            fillRule="evenodd"
-            d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-            clipRule="evenodd"
-          />
-        </svg>
-      );
-    }
-    return (
-      <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-        <circle
-          className="opacity-25"
-          cx="12"
-          cy="12"
-          r="10"
-          stroke="currentColor"
-          strokeWidth="4"
-        />
-        <path
-          className="opacity-75"
-          fill="currentColor"
-          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-        />
-      </svg>
-    );
-  };
-
-  const formatStatus = (status: string) => {
-    return status
-      .split("_")
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(" ");
+  const getStageIndex = (status: string) => {
+    return STATUS_STAGES.findIndex((s) => s.key === status);
   };
 
   const formatDate = (dateString: string) => {
@@ -237,342 +151,291 @@ export default function JobsClient({ user }: Props) {
     const diffMs = now.getTime() - date.getTime();
     const diffMins = Math.floor(diffMs / 60000);
     const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
 
     if (diffMins < 1) return "Just now";
     if (diffMins < 60) return `${diffMins}m ago`;
     if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString();
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
   if (loading && jobs.length === 0) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
-      </div>
-    );
-  }
-
-  if (error && jobs.length === 0) {
-    return (
-      <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-red-800 dark:text-red-200 mb-2">
-          Error loading jobs
-        </h3>
-        <p className="text-red-600 dark:text-red-300">{error}</p>
-        <button
-          onClick={fetchJobs}
-          className="mt-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-        >
-          Retry
-        </button>
+      <div className="flex items-center justify-center py-20">
+        <div className="text-center">
+          <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-gray-300 border-t-indigo-600 mb-4"></div>
+          <p className="text-gray-600 dark:text-gray-400">Loading jobs...</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-7xl mx-auto">
       {/* Toast Notifications */}
-      <div className="fixed top-20 right-4 z-50 space-y-2">
+      <div className="fixed top-20 right-4 z-50 space-y-2 max-w-md">
         {notifications.map((notif) => (
           <div
             key={notif.id}
-            className="bg-blue-600 text-white px-6 py-3 rounded-lg shadow-lg animate-slide-in-right flex items-center gap-3 max-w-md"
+            className={`px-4 py-3 rounded-lg shadow-lg backdrop-blur-sm animate-slide-in-right flex items-center gap-3 ${
+              notif.type === 'success'
+                ? 'bg-emerald-500/90 text-white'
+                : notif.type === 'error'
+                ? 'bg-rose-500/90 text-white'
+                : 'bg-slate-800/90 text-white'
+            }`}
           >
-            <svg
-              className="w-5 h-5 flex-shrink-0"
-              fill="currentColor"
-              viewBox="0 0 20 20"
-            >
-              <path
-                fillRule="evenodd"
-                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
-                clipRule="evenodd"
-              />
-            </svg>
+            <span className="text-lg">{notif.type === 'success' ? '✓' : notif.type === 'error' ? '✕' : 'ℹ'}</span>
             <p className="text-sm font-medium">{notif.message}</p>
           </div>
         ))}
       </div>
 
-      {/* Filters */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-4">
-        <div className="flex items-center gap-3 overflow-x-auto">
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-            Filter:
-          </span>
-          {["all", "pending", "running", "completed", "failed"].map((filter) => (
+      {/* Filter Tabs */}
+      <div className="mb-6 border-b border-gray-200 dark:border-gray-700">
+        <div className="flex gap-2 -mb-px overflow-x-auto">
+          {[
+            { key: "all", label: "All Jobs", count: jobs.length },
+            { key: "running", label: "In Progress", count: 0 },
+            { key: "completed", label: "Completed", count: 0 },
+            { key: "failed", label: "Failed", count: 0 },
+          ].map((filter) => (
             <button
-              key={filter}
-              onClick={() => setStatusFilter(filter)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
-                statusFilter === filter
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+              key={filter.key}
+              onClick={() => setStatusFilter(filter.key)}
+              className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+                statusFilter === filter.key
+                  ? "border-indigo-600 text-indigo-600 dark:text-indigo-400"
+                  : "border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:border-gray-300 dark:hover:border-gray-600"
               }`}
             >
-              {filter.charAt(0).toUpperCase() + filter.slice(1)}
+              {filter.label}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Jobs List */}
+      {/* Jobs Grid */}
       {jobs.length === 0 ? (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-12 text-center">
-          <svg
-            className="w-16 h-16 text-gray-400 mx-auto mb-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-            />
-          </svg>
+        <div className="text-center py-16 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700">
+          <div className="text-6xl mb-4">📋</div>
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-            No jobs found
+            No jobs yet
           </h3>
           <p className="text-gray-600 dark:text-gray-400 mb-6">
             Create your first fix job to get started
           </p>
           <a
             href="/fix"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium"
           >
             Create Fix Job
           </a>
         </div>
       ) : (
-        <div className="space-y-4">
+        <div className="grid gap-6">
           {jobs.map((job) => (
-            <div
+            <JobCard
               key={job.id}
-              className={`bg-white dark:bg-gray-800 rounded-lg shadow-sm overflow-hidden border transition-all duration-500 ${
-                updatedJobs.has(job.id)
-                  ? "border-blue-500 ring-2 ring-blue-200 dark:ring-blue-800 animate-pulse-subtle"
-                  : "border-gray-200 dark:border-gray-700"
-              }`}
-            >
-              {/* Job Header */}
-              <div className="p-6">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 mb-2">
-                      <span
-                        className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(
-                          job.status
-                        )}`}
-                      >
-                        {getStatusIcon(job.status)}
-                        {formatStatus(job.status)}
-                      </span>
-                      <span className="text-sm text-gray-500 dark:text-gray-400">
-                        {formatDate(job.created_at)}
-                      </span>
-                    </div>
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
-                      {job.problem_statement}
-                    </h3>
-                    <p className="text-sm text-gray-600 dark:text-gray-400 flex items-center gap-2">
-                      <svg
-                        className="w-4 h-4"
-                        fill="currentColor"
-                        viewBox="0 0 20 20"
-                      >
-                        <path
-                          fillRule="evenodd"
-                          d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-                      {job.repository_full_name}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {job.pr_url && (
-                      <a
-                        href={job.pr_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
-                      >
-                        <svg
-                          className="w-4 h-4"
-                          fill="currentColor"
-                          viewBox="0 0 20 20"
-                        >
-                          <path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z" />
-                          <path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z" />
-                        </svg>
-                        View PR
-                      </a>
-                    )}
-                    <button
-                      onClick={() => toggleJob(job.id)}
-                      className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-                    >
-                      <svg
-                        className={`w-5 h-5 transition-transform ${
-                          expandedJobs.has(job.id) ? "rotate-180" : ""
-                        }`}
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M19 9l-7 7-7-7"
-                        />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Error Message */}
-                {job.error_message && (
-                  <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-                    <p className="text-sm text-red-800 dark:text-red-200 font-medium">
-                      Error: {job.error_message}
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* Expanded Content */}
-              {expandedJobs.has(job.id) && (
-                <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
-                  <div className="p-6 space-y-6">
-                    {/* RCA Section */}
-                    {job.rca && (
-                      <div>
-                        <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                          <svg
-                            className="w-5 h-5 text-blue-500"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                            />
-                          </svg>
-                          Root Cause Analysis
-                        </h4>
-                        <div className="prose prose-sm dark:prose-invert max-w-none bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
-                          <ReactMarkdown>{job.rca}</ReactMarkdown>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Files Changed */}
-                    {job.files_changed && job.files_changed.length > 0 && (
-                      <div>
-                        <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                          <svg
-                            className="w-5 h-5 text-purple-500"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
-                            />
-                          </svg>
-                          Files Changed ({job.files_changed.length})
-                        </h4>
-                        <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
-                          <ul className="space-y-2">
-                            {job.files_changed.map((file, index) => (
-                              <li
-                                key={index}
-                                className="text-sm text-gray-700 dark:text-gray-300 font-mono flex items-center gap-2"
-                              >
-                                <svg
-                                  className="w-4 h-4 text-gray-400 flex-shrink-0"
-                                  fill="currentColor"
-                                  viewBox="0 0 20 20"
-                                >
-                                  <path
-                                    fillRule="evenodd"
-                                    d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"
-                                    clipRule="evenodd"
-                                  />
-                                </svg>
-                                {file}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Timeline */}
-                    <div>
-                      <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
-                        <svg
-                          className="w-5 h-5 text-green-500"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                          />
-                        </svg>
-                        Timeline
-                      </h4>
-                      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700 space-y-2">
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-600 dark:text-gray-400">
-                            Created:
-                          </span>
-                          <span className="text-gray-900 dark:text-white font-medium">
-                            {new Date(job.created_at).toLocaleString()}
-                          </span>
-                        </div>
-                        {job.started_at && (
-                          <div className="flex justify-between text-sm">
-                            <span className="text-gray-600 dark:text-gray-400">
-                              Started:
-                            </span>
-                            <span className="text-gray-900 dark:text-white font-medium">
-                              {new Date(job.started_at).toLocaleString()}
-                            </span>
-                          </div>
-                        )}
-                        {job.completed_at && (
-                          <div className="flex justify-between text-sm">
-                            <span className="text-gray-600 dark:text-gray-400">
-                              Completed:
-                            </span>
-                            <span className="text-gray-900 dark:text-white font-medium">
-                              {new Date(job.completed_at).toLocaleString()}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+              job={job}
+              isSelected={selectedJob === job.id}
+              isUpdated={updatedJobs.has(job.id)}
+              onSelect={() => setSelectedJob(selectedJob === job.id ? null : job.id)}
+              getStageIndex={getStageIndex}
+              formatDate={formatDate}
+            />
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Separate JobCard component for cleaner code
+function JobCard({
+  job,
+  isSelected,
+  isUpdated,
+  onSelect,
+  getStageIndex,
+  formatDate,
+}: {
+  job: any;
+  isSelected: boolean;
+  isUpdated: boolean;
+  onSelect: () => void;
+  getStageIndex: (status: string) => number;
+  formatDate: (date: string) => string;
+}) {
+  const currentStage = getStageIndex(job.status);
+  const isActive = !['completed', 'failed'].includes(job.status);
+
+  return (
+    <div
+      className={`bg-white dark:bg-gray-800 rounded-xl border transition-all duration-300 ${
+        isUpdated
+          ? "border-indigo-500 shadow-lg shadow-indigo-100 dark:shadow-indigo-900/20"
+          : "border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md"
+      }`}
+    >
+      <div className="p-6">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-3 mb-2">
+              <span className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                {job.repository_full_name}
+              </span>
+              <span className="text-xs text-gray-400">•</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                {formatDate(job.created_at)}
+              </span>
+            </div>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1 line-clamp-2">
+              {job.problem_statement}
+            </h3>
+          </div>
+          {job.pr_url && (
+            <a
+              href={job.pr_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-shrink-0 inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors"
+            >
+              View PR →
+            </a>
+          )}
+        </div>
+
+        {/* Progress Tracker */}
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-2">
+            {STATUS_STAGES.filter(s => s.key !== 'failed').map((stage, idx) => {
+              const isCompleted = idx < currentStage || job.status === 'completed';
+              const isCurrent = idx === currentStage && isActive;
+              const isFailed = job.status === 'failed';
+
+              return (
+                <div key={stage.key} className="flex flex-col items-center flex-1">
+                  <div
+                    className={`w-10 h-10 rounded-full flex items-center justify-center text-lg font-medium transition-all mb-2 ${
+                      isFailed
+                        ? 'bg-rose-100 dark:bg-rose-900/20 text-rose-600'
+                        : isCompleted
+                        ? 'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-600'
+                        : isCurrent
+                        ? 'bg-indigo-100 dark:bg-indigo-900/20 text-indigo-600 animate-pulse'
+                        : 'bg-gray-100 dark:bg-gray-700 text-gray-400'
+                    }`}
+                  >
+                    {isFailed ? '✕' : isCompleted ? '✓' : stage.icon}
+                  </div>
+                  <span
+                    className={`text-xs font-medium text-center ${
+                      isFailed
+                        ? 'text-rose-600'
+                        : isCompleted || isCurrent
+                        ? 'text-gray-900 dark:text-white'
+                        : 'text-gray-400'
+                    }`}
+                  >
+                    {stage.label}
+                  </span>
+                  {idx < STATUS_STAGES.length - 2 && (
+                    <div
+                      className={`hidden sm:block absolute h-0.5 w-full top-5 left-1/2 -z-10 transition-all ${
+                        isCompleted ? 'bg-emerald-300' : 'bg-gray-200 dark:bg-gray-700'
+                      }`}
+                      style={{ width: 'calc(100% - 40px)' }}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Error Message */}
+        {job.error_message && (
+          <div className="mb-4 p-4 bg-rose-50 dark:bg-rose-900/10 border border-rose-200 dark:border-rose-800 rounded-lg">
+            <div className="flex items-start gap-3">
+              <span className="text-rose-500 text-xl">⚠</span>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-rose-900 dark:text-rose-200 mb-1">
+                  Error occurred
+                </p>
+                <p className="text-sm text-rose-700 dark:text-rose-300">
+                  {job.error_message}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Details Button */}
+        <button
+          onClick={onSelect}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-700/50 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+        >
+          {isSelected ? '↑ Hide Details' : '↓ View Details'}
+        </button>
+      </div>
+
+      {/* Expanded Details */}
+      {isSelected && (
+        <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
+          <div className="p-6 space-y-6">
+            {/* RCA Section */}
+            {job.rca && (
+              <div>
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+                  <span className="text-indigo-600">📊</span>
+                  Root Cause Analysis
+                </h4>
+                <div className="prose prose-sm prose-slate dark:prose-invert max-w-none bg-white dark:bg-gray-800 rounded-lg p-6 border border-gray-200 dark:border-gray-700">
+                  <ReactMarkdown
+                    components={{
+                      h1: ({ node, ...props }) => <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-4 pb-2 border-b border-gray-200 dark:border-gray-700" {...props} />,
+                      h2: ({ node, ...props }) => <h2 className="text-xl font-semibold text-gray-900 dark:text-white mt-6 mb-3" {...props} />,
+                      h3: ({ node, ...props }) => <h3 className="text-lg font-semibold text-gray-900 dark:text-white mt-4 mb-2" {...props} />,
+                      p: ({ node, ...props }) => <p className="text-gray-700 dark:text-gray-300 mb-3 leading-relaxed" {...props} />,
+                      ul: ({ node, ...props }) => <ul className="list-disc list-inside text-gray-700 dark:text-gray-300 space-y-1 mb-3" {...props} />,
+                      ol: ({ node, ...props }) => <ol className="list-decimal list-inside text-gray-700 dark:text-gray-300 space-y-1 mb-3" {...props} />,
+                      code: ({ node, inline, ...props }: any) =>
+                        inline ? (
+                          <code className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-rose-600 dark:text-rose-400 rounded text-sm font-mono" {...props} />
+                        ) : (
+                          <code className="block p-3 bg-gray-900 text-gray-100 rounded-lg text-sm font-mono overflow-x-auto" {...props} />
+                        ),
+                    }}
+                  >
+                    {job.rca}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            )}
+
+            {/* Files Changed */}
+            {job.files_changed && job.files_changed.length > 0 && (
+              <div>
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+                  <span className="text-purple-600">📝</span>
+                  Files Modified ({job.files_changed.length})
+                </h4>
+                <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+                  <div className="max-h-64 overflow-y-auto">
+                    {job.files_changed.map((file, index) => (
+                      <div
+                        key={index}
+                        className="px-4 py-2 text-sm font-mono text-gray-700 dark:text-gray-300 border-b border-gray-100 dark:border-gray-700 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                      >
+                        {file}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
