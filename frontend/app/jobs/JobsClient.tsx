@@ -51,6 +51,8 @@ export default function JobsClient({ user }: Props) {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [updatedJobs, setUpdatedJobs] = useState<Set<string>>(new Set());
   const [notifications, setNotifications] = useState<Array<{ id: string; message: string; type: string }>>([]);
+  const [demoMode, setDemoMode] = useState(false);
+  const [demoJob, setDemoJob] = useState<FixJob | null>(null);
 
   useEffect(() => {
     fetchJobs();
@@ -126,6 +128,72 @@ export default function JobsClient({ user }: Props) {
     }, 4000);
   };
 
+  const startDemo = () => {
+    const demo: FixJob = {
+      id: 'demo-job',
+      repository_full_name: 'your-org/demo-repo',
+      problem_statement: 'Fix authentication bug in login flow',
+      status: 'pending',
+      rca: null,
+      codebase_documentation: null,
+      pr_url: null,
+      pr_number: null,
+      branch_name: null,
+      files_changed: null,
+      error_message: null,
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
+    };
+
+    setDemoJob(demo);
+    setDemoMode(true);
+    setSelectedJob('demo-job');
+    showNotification('Demo started - Watch the progress!', 'info');
+
+    // Progress through stages
+    const stages = [
+      { status: 'pending', delay: 0, notification: 'Job queued', type: 'info' },
+      { status: 'rca_started', delay: 2000, notification: 'Starting analysis...', type: 'info' },
+      { status: 'rca_completed', delay: 4000, notification: 'RCA completed', type: 'success', rca: '# Root Cause Analysis\n\n## Problem\nAuthentication bug in login flow causing session timeout.\n\n## Solution\nUpdate session management to use secure cookies.' },
+      { status: 'documentation_checked', delay: 6000, notification: 'Documentation ready', type: 'info' },
+      { status: 'code_changes_started', delay: 8000, notification: 'Making code changes...', type: 'info' },
+      { status: 'code_changes_completed', delay: 11000, notification: 'Code changes complete', type: 'success', files: ['src/auth/session.ts', 'src/middleware/auth.ts'] },
+      { status: 'pr_created', delay: 13000, notification: 'PR created!', type: 'success', pr: 'https://github.com/demo/repo/pull/123' },
+      { status: 'completed', delay: 15000, notification: 'Job completed successfully!', type: 'success' },
+    ];
+
+    stages.forEach((stage) => {
+      setTimeout(() => {
+        setDemoJob((prev) => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            status: stage.status,
+            rca: stage.rca || prev.rca,
+            files_changed: stage.files || prev.files_changed,
+            pr_url: stage.pr || prev.pr_url,
+            started_at: stage.status === 'rca_started' ? new Date().toISOString() : prev.started_at,
+            completed_at: stage.status === 'completed' ? new Date().toISOString() : prev.completed_at,
+          };
+        });
+        setUpdatedJobs(new Set(['demo-job']));
+        showNotification(stage.notification, stage.type);
+        setTimeout(() => setUpdatedJobs(new Set()), 2000);
+      }, stage.delay);
+    });
+
+    // End demo after completion
+    setTimeout(() => {
+      showNotification('Demo complete! This is how jobs progress in real-time.', 'success');
+      setTimeout(() => {
+        setDemoMode(false);
+        setDemoJob(null);
+        setSelectedJob(null);
+      }, 5000);
+    }, 18000);
+  };
+
   const fetchJobs = async () => {
     try {
       setError(null);
@@ -171,6 +239,26 @@ export default function JobsClient({ user }: Props) {
 
   return (
     <div className="max-w-7xl mx-auto">
+      {/* Demo Mode Banner */}
+      {demoMode && (
+        <div className="mb-6 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl p-6 shadow-lg">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center animate-pulse">
+                <span className="text-2xl">🎬</span>
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold mb-1">Demo Mode Active</h3>
+                <p className="text-sm text-white/90">Watch how jobs progress through stages in real-time!</p>
+              </div>
+            </div>
+            <div className="text-sm bg-white/20 px-4 py-2 rounded-lg font-medium">
+              Auto-completing in ~20s
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toast Notifications */}
       <div className="fixed top-20 right-4 z-50 space-y-2 max-w-md">
         {notifications.map((notif) => (
@@ -190,9 +278,10 @@ export default function JobsClient({ user }: Props) {
         ))}
       </div>
 
-      {/* Filter Tabs */}
+      {/* Filter Tabs with Demo Button */}
       <div className="mb-6 border-b border-gray-200 dark:border-gray-700">
-        <div className="flex gap-2 -mb-px overflow-x-auto">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex gap-2 -mb-px overflow-x-auto">
           {[
             { key: "all", label: "All Jobs", count: jobs.length },
             { key: "running", label: "In Progress", count: 0 },
@@ -211,6 +300,16 @@ export default function JobsClient({ user }: Props) {
               {filter.label}
             </button>
           ))}
+          </div>
+          {!demoMode && (
+            <button
+              onClick={startDemo}
+              className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:from-indigo-700 hover:to-purple-700 transition-all font-medium shadow-lg hover:shadow-xl"
+            >
+              <span className="text-lg">🎬</span>
+              Try Live Demo
+            </button>
+          )}
         </div>
       </div>
 
@@ -233,6 +332,19 @@ export default function JobsClient({ user }: Props) {
         </div>
       ) : (
         <div className="grid gap-6">
+          {/* Demo Job First */}
+          {demoJob && (
+            <JobCard
+              key={demoJob.id}
+              job={demoJob}
+              isSelected={selectedJob === demoJob.id}
+              isUpdated={updatedJobs.has(demoJob.id)}
+              onSelect={() => setSelectedJob(selectedJob === demoJob.id ? null : demoJob.id)}
+              getStageIndex={getStageIndex}
+              formatDate={formatDate}
+            />
+          )}
+          {/* Real Jobs */}
           {jobs.map((job) => (
             <JobCard
               key={job.id}
