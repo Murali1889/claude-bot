@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { createBrowserClient } from "@/lib/supabase";
 import RCAEditor from "./RCAEditor";
+import RCAViewer from "@/components/RCAViewer";
 
 interface User {
   id: string;
@@ -382,19 +383,19 @@ function JobCard({
 }: any) {
   const isFinished = ["completed", "failed"].includes(job.status);
 
-  // For completed jobs: Two-column layout
+  // For completed jobs: Split view with RCA on right
   if (isFinished) {
     return (
       <div
-        className={`bg-white dark:bg-gray-800 rounded-lg border transition-all duration-300 ${
+        className={`bg-white dark:bg-gray-800 rounded-xl border transition-all duration-300 overflow-hidden ${
           isUpdated
             ? "border-indigo-400 shadow-lg shadow-indigo-100 dark:shadow-indigo-900/20"
             : "border-gray-200 dark:border-gray-700 hover:shadow-md"
         }`}
       >
-        <div className="grid md:grid-cols-2 gap-4 p-4">
-          {/* Left: RCA & Details */}
-          <div className="space-y-3">
+        <div className="grid md:grid-cols-5 gap-0 h-[600px]">
+          {/* Left: Job Details (2 columns) */}
+          <div className="md:col-span-2 p-6 space-y-4 overflow-y-auto border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
             <div className="flex items-center gap-2">
               <div
                 className={`px-2 py-1 rounded text-xs font-medium ${
@@ -417,32 +418,71 @@ function JobCard({
               )}
             </div>
 
-            {job.rca && (
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300">
-                    Root Cause Analysis
-                    {job.rca_edited && (
-                      <span className="ml-2 px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 text-xs rounded">
-                        Edited {job.regeneration_count > 0 && `(${job.regeneration_count}x)`}
-                      </span>
-                    )}
-                  </h4>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onEditRca(job.id, job.rca);
-                    }}
-                    className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-                  >
-                    Edit RCA
-                  </button>
-                </div>
-                <div className="prose prose-sm prose-slate dark:prose-invert max-w-none bg-gray-50 dark:bg-gray-900/50 rounded p-3 text-xs max-h-64 overflow-y-auto">
-                  <ReactMarkdown>{job.rca}</ReactMarkdown>
-                </div>
+            {/* Problem Statement */}
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <svg
+                  className="w-4 h-4 text-gray-400"
+                  fill="currentColor"
+                  viewBox="0 0 20 20"
+                >
+                  <path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z" />
+                  <path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z" />
+                </svg>
+                <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                  Problem Statement
+                </h4>
               </div>
-            )}
+              <div className="bg-white dark:bg-gray-800 rounded-lg p-3 border border-gray-200 dark:border-gray-700">
+                <p className="text-sm text-gray-900 dark:text-white leading-relaxed">
+                  {job.problem_statement}
+                </p>
+              </div>
+            </div>
+
+            {/* Repository Info */}
+            <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+              <svg
+                className="w-4 h-4"
+                fill="currentColor"
+                viewBox="0 0 20 20"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              <span>{job.repository_full_name}</span>
+            </div>
+
+            {/* Timestamps */}
+            <div className="pt-3 border-t border-gray-200 dark:border-gray-700 space-y-2 text-xs text-gray-600 dark:text-gray-400">
+              <div className="flex justify-between">
+                <span className="font-medium">Created</span>
+                <span>{new Date(job.created_at).toLocaleString()}</span>
+              </div>
+              {job.completed_at && (
+                <div className="flex justify-between">
+                  <span className="font-medium">Completed</span>
+                  <span>{new Date(job.completed_at).toLocaleString()}</span>
+                </div>
+              )}
+              {job.started_at && job.completed_at && (
+                <div className="flex justify-between">
+                  <span className="font-medium">Duration</span>
+                  <span>
+                    {Math.round(
+                      (new Date(job.completed_at).getTime() -
+                        new Date(job.started_at).getTime()) /
+                        1000 /
+                        60
+                    )}{" "}
+                    min
+                  </span>
+                </div>
+              )}
+            </div>
 
             {job.files_changed && job.files_changed.length > 0 && (
               <div>
@@ -469,45 +509,25 @@ function JobCard({
             )}
           </div>
 
-          {/* Right: Problem Statement */}
-          <div className="space-y-3">
-            <div>
-              <div className="flex items-center gap-2 mb-2">
-                <svg
-                  className="w-3.5 h-3.5 text-gray-400 flex-shrink-0"
-                  fill="currentColor"
-                  viewBox="0 0 20 20"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-                <span className="text-xs text-gray-500 dark:text-gray-400">
-                  {job.repository_full_name}
-                </span>
-              </div>
-              <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
-                Problem Statement
-              </h4>
-              <p className="text-sm text-gray-900 dark:text-white leading-relaxed">
-                {job.problem_statement}
-              </p>
-            </div>
-
-            <div className="pt-3 border-t border-gray-200 dark:border-gray-700 space-y-2 text-xs text-gray-600 dark:text-gray-400">
-              <div className="flex justify-between">
-                <span>Created</span>
-                <span>{new Date(job.created_at).toLocaleString()}</span>
-              </div>
-              {job.completed_at && (
-                <div className="flex justify-between">
-                  <span>Completed</span>
-                  <span>{new Date(job.completed_at).toLocaleString()}</span>
+          {/* Right: RCA Viewer (3 columns) */}
+          <div className="md:col-span-3">
+            {job.rca ? (
+              <RCAViewer
+                rca={job.rca}
+                onEdit={() => onEditRca(job.id, job.rca)}
+                isEdited={job.rca_edited}
+                regenerationCount={job.regeneration_count}
+              />
+            ) : (
+              <div className="h-full flex items-center justify-center bg-gray-50 dark:bg-gray-900/50">
+                <div className="text-center">
+                  <div className="text-4xl mb-4">📄</div>
+                  <p className="text-gray-500 dark:text-gray-400">
+                    No RCA available
+                  </p>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
