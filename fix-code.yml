@@ -323,9 +323,10 @@ jobs:
         run: |
           cd repo
 
-          # Remove RCA.md and code_base.md from git tracking (don't commit them)
+          # Remove RCA.md from git tracking (don't commit it, it's in PR description)
           git reset RCA.md 2>/dev/null || true
-          git reset code_base.md 2>/dev/null || true
+
+          # Keep code_base.md - it's useful for future runs!
 
           if [[ -n $(git status --porcelain) ]]; then
             echo "has_changes=true" >> $GITHUB_OUTPUT
@@ -362,9 +363,10 @@ jobs:
           cd repo
           git add -A
 
-          # Unstage documentation files
+          # Unstage RCA.md (already in PR description, no need to commit)
           git reset RCA.md 2>/dev/null || true
-          git reset code_base.md 2>/dev/null || true
+
+          # Keep code_base.md in the commit - it helps future runs!
 
           git commit -m "fix: ${{ inputs.problem_statement }}" || true
 
@@ -397,6 +399,18 @@ jobs:
           DIFF_STATS=$(git diff HEAD~1 --stat)
           CHANGED_FILES=$(git diff HEAD~1 --name-only)
 
+          # Check if code_base.md was added
+          CODEBASE_NOTE=""
+          if [ -f "code_base.md" ] && git diff HEAD~1 --name-only | grep -q "code_base.md"; then
+            CODEBASE_NOTE="
+
+          ## 📚 Documentation Added
+
+          This PR includes \`code_base.md\` - a comprehensive codebase documentation file that will help Claude understand the project structure for future fixes.
+
+          ---"
+          fi
+
           # Create comprehensive PR description
           PR_BODY="## 🤖 Automated Fix by Claude Bot
 
@@ -422,6 +436,7 @@ jobs:
           \`\`\`
           $DIFF_STATS
           \`\`\`
+          $CODEBASE_NOTE
 
           ---
 
