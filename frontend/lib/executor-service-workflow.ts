@@ -159,101 +159,97 @@ async function triggerWorkerWorkflow(
   };
   console.log(`[triggerWorkflow] Request body:`, JSON.stringify(requestBody, null, 2));
 
-  // Trigger workflow_dispatch using fetch with timeout
+  // Trigger workflow_dispatch using fetch with timeout and retry
   console.log(`[triggerWorkflow] Making POST request to GitHub API...`);
   console.log(`[triggerWorkflow] URL: ${workflowUrl}`);
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+  const maxRetries = 3;
+  const timeoutMs = 60000; // 60 seconds
+  let lastError: Error | null = null;
 
-  let response;
-  try {
-    console.log(`[triggerWorkflow] Sending request with body...`);
-    console.log(`[triggerWorkflow] Using PAT: ${githubToken.substring(0, 15)}... (length: ${githubToken.length})`);
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`[triggerWorkflow] Attempt ${attempt}/${maxRetries}...`);
 
-    response = await fetch(workflowUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ref: "main",
-        inputs: {
-          target_repo: targetRepo,
-          problem_statement: problemStatement,
-          installation_id: installationId.toString(),
-          job_id: jobId,
-          api_key: apiKey,
-          complexity: complexity,
-          user_rca: userRca || '',
-          regeneration: regeneration ? 'true' : 'false',
-          image_urls: imageUrls ? imageUrls.join(',') : '',
-          screenshots_base64: screenshotsBase64 ? JSON.stringify(screenshotsBase64) : '[]',
-        },
-      }),
-      signal: controller.signal,
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    clearTimeout(timeoutId);
-    console.log(`[triggerWorkflow] ✅ Response received: ${response.status} ${response.statusText}`);
-
-    // Log response headers for debugging
-    const rateLimitRemaining = response.headers.get('x-ratelimit-remaining');
-    const rateLimitReset = response.headers.get('x-ratelimit-reset');
-    console.log(`[triggerWorkflow] Rate limit remaining: ${rateLimitRemaining}`);
-    if (rateLimitRemaining === '0' && rateLimitReset) {
-      const resetDate = new Date(parseInt(rateLimitReset) * 1000);
-      console.log(`[triggerWorkflow] ⚠️ Rate limit will reset at: ${resetDate.toISOString()}`);
-    }
-  } catch (fetchError) {
-    clearTimeout(timeoutId);
-    if (fetchError instanceof Error && fetchError.name === 'AbortError') {
-      console.error(`[triggerWorkflow] ❌ Request timeout after 30 seconds`);
-      throw new Error('GitHub API request timeout - workflow trigger took too long');
-    }
-    console.error(`[triggerWorkflow] ❌ Fetch error:`, fetchError);
-    console.error(`[triggerWorkflow] Error details:`, {
-      name: fetchError instanceof Error ? fetchError.name : 'Unknown',
-      message: fetchError instanceof Error ? fetchError.message : String(fetchError),
-      stack: fetchError instanceof Error ? fetchError.stack : undefined,
-    });
-    throw new Error(`Failed to make request to GitHub API: ${fetchError instanceof Error ? fetchError.message : 'Unknown error'}`);
-  }
-
-  if (!response.ok) {
-    let errorDetails;
+    let response;
     try {
-      errorDetails = await response.json();
-      console.error(`[triggerWorkflow] ❌ GitHub API Error Response:`, JSON.stringify(errorDetails, null, 2));
-    } catch {
-      errorDetails = await response.text();
-      console.error(`[triggerWorkflow] ❌ GitHub API Error (text):`, errorDetails);
+      console.log(`[triggerWorkflow] Sending request with body...`);
+      console.log(`[triggerWorkflow] Using PAT: ${githubToken.substring(0, 15)}... (length: ${githubToken.length})`);
+
+      response = await fetch(workflowUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ref: "main",
+          inputs: {
+            target_repo: targetRepo,
+            problem_statement: problemStatement,
+            installation_id: installationId.toString(),
+            job_id: jobId,
+            api_key: apiKey,
+            complexity: complexity,
+            user_rca: userRca || '',
+            regeneration: regeneration ? 'true' : 'false',
+            image_urls: imageUrls ? imageUrls.join(',') : '',
+            screenshots_base64: screenshotsBase64 ? JSON.stringify(screenshotsBase64) : '[]',
+          },
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+      console.log(`[triggerWorkflow] ✅ Response received: ${response.status} ${response.statusText}`);
+
+      // Log response headers for debugging
+      const rateLimitRemaining = response.headers.get('x-ratelimit-remaining');
+      const rateLimitReset = response.headers.get('x-ratelimit-reset');
+      console.log(`[triggerWorkflow] Rate limit remaining: ${rateLimitRemaining}`);
+      if (rateLimitRemaining === '0' && rateLimitReset) {
+        const resetDate = new Date(parseInt(rateLimitReset) * 1000);
+        console.log(`[triggerWorkflow] ⚠️ Rate limit will reset at: ${resetDate.toISOString()}`);
+      }
+
+      // If response is OK, break out of retry loop
+      if (response.ok) {
+        console.log(`[triggerWorkflow] ✅ Successfully triggered workflow in ${workerOwner}/${workerRepo} for ${targetRepo}`);
+        return; // Success - exit function
+      }
+
+      // If not OK, handle error and potentially retry
+      lastError = new Error(`GitHub API returned ${response.status}`);
+
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+
+      if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+        console.error(`[triggerWorkflow] ❌ Request timeout after ${timeoutMs/1000}s (attempt ${attempt}/${maxRetries})`);
+        lastError = new Error(`GitHub API request timeout after ${timeoutMs/1000}s`);
+      } else {
+        console.error(`[triggerWorkflow] ❌ Fetch error (attempt ${attempt}/${maxRetries}):`, fetchError);
+        console.error(`[triggerWorkflow] Error details:`, {
+          name: fetchError instanceof Error ? fetchError.name : 'Unknown',
+          message: fetchError instanceof Error ? fetchError.message : String(fetchError),
+        });
+        lastError = fetchError instanceof Error ? fetchError : new Error('Unknown fetch error');
+      }
     }
 
-    // Specific error messages for common issues
-    if (response.status === 404) {
-      throw new Error(
-        `Workflow not found: Check if 'fix-code.yml' exists in .github/workflows/ of ${workerOwner}/${workerRepo}`
-      );
-    } else if (response.status === 403) {
-      throw new Error(
-        `Permission denied: GITHUB_PAT may lack 'workflow' scope or repository access. Error: ${JSON.stringify(errorDetails)}`
-      );
-    } else if (response.status === 422) {
-      throw new Error(
-        `Invalid workflow inputs: ${JSON.stringify(errorDetails)}`
-      );
-    } else {
-      throw new Error(
-        `Failed to trigger workflow (${response.status}): ${JSON.stringify(errorDetails)}`
-      );
+    // If this wasn't the last attempt, wait before retrying (exponential backoff)
+    if (attempt < maxRetries) {
+      const waitTime = Math.min(1000 * Math.pow(2, attempt - 1), 10000); // Max 10s wait
+      console.log(`[triggerWorkflow] ⏳ Waiting ${waitTime}ms before retry...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
     }
   }
 
-  console.log(
-    `[triggerWorkflow] ✅ Successfully triggered workflow in ${workerOwner}/${workerRepo} for ${targetRepo}`
-  );
+  // If we got here, all retries failed
+  console.error(`[triggerWorkflow] ❌ All ${maxRetries} attempts failed`);
+  throw new Error(`Failed to trigger workflow after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`);
 }
