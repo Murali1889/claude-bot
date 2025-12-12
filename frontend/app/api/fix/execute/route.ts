@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { createServerClient } from "@/lib/supabase";
 import { executeFix } from "@/lib/executor-service-workflow";
+import { classifyProblem } from "@/lib/problem-classifier";
 
 export const dynamic = "force-dynamic";
 
@@ -169,7 +170,17 @@ export async function POST(request: NextRequest) {
     // Extract repository name from full_name
     const repoName = repository_full_name.split("/")[1] || repository_full_name;
 
-    // Create fix_job in database
+    // Auto-classify the problem statement
+    const classification = classifyProblem(problem_statement.trim());
+
+    console.log("Problem classification:", {
+      complexity: classification.complexity,
+      bugType: classification.bugType,
+      priority: classification.priority,
+      confidence: classification.confidence,
+    });
+
+    // Create fix_job in database with classification
     const { data: job, error: jobError } = await supabase
       .from("fix_jobs")
       .insert({
@@ -180,6 +191,10 @@ export async function POST(request: NextRequest) {
         repository_full_name: repository_full_name,
         problem_statement: problem_statement.trim(),
         status: "pending",
+        complexity: classification.complexity,
+        bug_type: classification.bugType,
+        priority: classification.priority,
+        classification_confidence: classification.confidence,
       })
       .select()
       .single();
@@ -202,6 +217,7 @@ export async function POST(request: NextRequest) {
       installationId: installation_id,
       repositoryFullName: repository_full_name,
       problemStatement: problem_statement.trim(),
+      complexity: classification.complexity,
       encryptedKey: apiKey.encrypted_key,
       keyIv: apiKey.key_iv,
       keyAuthTag: apiKey.key_auth_tag,
@@ -209,7 +225,7 @@ export async function POST(request: NextRequest) {
       console.error(`Error executing fix job ${job.id}:`, error);
     });
 
-    // Return job immediately
+    // Return job immediately with classification
     return NextResponse.json(
       {
         success: true,
@@ -220,6 +236,13 @@ export async function POST(request: NextRequest) {
           problem_statement: job.problem_statement,
           status: job.status,
           created_at: job.created_at,
+          complexity: classification.complexity,
+          bug_type: classification.bugType,
+          priority: classification.priority,
+        },
+        classification: {
+          ...classification,
+          estimated_cost: `$${(classification.complexity === 'simple' ? 0.05 : classification.complexity === 'medium' ? 0.34 : 0.80).toFixed(2)}`,
         },
       },
       { status: 201 }

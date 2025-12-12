@@ -18,6 +18,7 @@ interface ExecuteFixParams {
   installationId: number;
   repositoryFullName: string;
   problemStatement: string;
+  complexity?: string;
   encryptedKey: string;
   keyIv: string;
   keyAuthTag: string;
@@ -28,7 +29,7 @@ interface ExecuteFixParams {
  * Takes all needed data as parameters to avoid database queries
  */
 export async function executeFix(params: ExecuteFixParams): Promise<void> {
-  const { jobId, installationId, repositoryFullName, problemStatement, encryptedKey, keyIv, keyAuthTag } = params;
+  const { jobId, installationId, repositoryFullName, problemStatement, complexity, encryptedKey, keyIv, keyAuthTag } = params;
 
   console.log(`[executeFix] Starting for job ${jobId}`);
   console.log(`[executeFix] Repository: ${repositoryFullName}`);
@@ -60,7 +61,8 @@ export async function executeFix(params: ExecuteFixParams): Promise<void> {
       repositoryFullName,
       problemStatement,
       token,
-      jobId
+      jobId,
+      complexity || 'medium'
     );
 
     console.log(`[executeFix] ✅ Worker workflow triggered successfully for job ${jobId}`);
@@ -104,7 +106,8 @@ async function triggerWorkerWorkflow(
   targetRepo: string,
   problemStatement: string,
   apiKey: string,
-  jobId: string
+  jobId: string,
+  complexity: string = 'medium'
 ): Promise<void> {
   console.log(`[triggerWorkflow] Starting workflow trigger for job ${jobId}`);
 
@@ -159,6 +162,7 @@ async function triggerWorkerWorkflow(
         installation_id: installationId.toString(),
         job_id: jobId,
         api_key: apiKey,
+        complexity: complexity,
       },
     }),
   });
