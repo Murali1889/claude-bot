@@ -159,6 +159,33 @@ async function triggerWorkerWorkflow(
   };
   console.log(`[triggerWorkflow] Request body:`, JSON.stringify(requestBody, null, 2));
 
+  // Pre-check: Verify workflow file exists
+  console.log(`[triggerWorkflow] Verifying workflow file exists...`);
+  const checkUrl = `https://api.github.com/repos/${workerOwner}/${workerRepo}/contents/.github/workflows/${workflowFile}`;
+  try {
+    const checkResponse = await fetch(checkUrl, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${githubToken}`,
+        Accept: "application/vnd.github+json",
+      },
+    });
+
+    if (checkResponse.status === 404) {
+      console.error(`[triggerWorkflow] ❌ Workflow file not found at: .github/workflows/${workflowFile}`);
+      throw new Error(
+        `Workflow file 'fix-code.yml' not found in ${workerOwner}/${workerRepo}. Please create .github/workflows/fix-code.yml in the worker repository.`
+      );
+    } else if (!checkResponse.ok) {
+      console.warn(`[triggerWorkflow] ⚠️ Could not verify workflow file (${checkResponse.status}), continuing anyway...`);
+    } else {
+      console.log(`[triggerWorkflow] ✅ Workflow file exists`);
+    }
+  } catch (error) {
+    console.warn(`[triggerWorkflow] ⚠️ Pre-check failed:`, error instanceof Error ? error.message : 'Unknown error');
+    // Continue anyway - pre-check is not critical
+  }
+
   // Trigger workflow_dispatch using fetch with timeout
   console.log(`[triggerWorkflow] Making POST request to GitHub API...`);
   console.log(`[triggerWorkflow] URL: ${workflowUrl}`);
@@ -169,6 +196,8 @@ async function triggerWorkerWorkflow(
   let response;
   try {
     console.log(`[triggerWorkflow] Sending request with body...`);
+    console.log(`[triggerWorkflow] Using PAT: ${githubToken.substring(0, 15)}... (length: ${githubToken.length})`);
+
     response = await fetch(workflowUrl, {
       method: "POST",
       headers: {
@@ -197,6 +226,15 @@ async function triggerWorkerWorkflow(
 
     clearTimeout(timeoutId);
     console.log(`[triggerWorkflow] ✅ Response received: ${response.status} ${response.statusText}`);
+
+    // Log response headers for debugging
+    const rateLimitRemaining = response.headers.get('x-ratelimit-remaining');
+    const rateLimitReset = response.headers.get('x-ratelimit-reset');
+    console.log(`[triggerWorkflow] Rate limit remaining: ${rateLimitRemaining}`);
+    if (rateLimitRemaining === '0' && rateLimitReset) {
+      const resetDate = new Date(parseInt(rateLimitReset) * 1000);
+      console.log(`[triggerWorkflow] ⚠️ Rate limit will reset at: ${resetDate.toISOString()}`);
+    }
   } catch (fetchError) {
     clearTimeout(timeoutId);
     if (fetchError instanceof Error && fetchError.name === 'AbortError') {
@@ -213,11 +251,33 @@ async function triggerWorkerWorkflow(
   }
 
   if (!response.ok) {
-    const error = await response.text();
-    console.error(`[triggerWorkflow] ❌ Failed to trigger workflow:`, error);
-    throw new Error(
-      `Failed to trigger workflow: ${response.status} ${error}`
-    );
+    let errorDetails;
+    try {
+      errorDetails = await response.json();
+      console.error(`[triggerWorkflow] ❌ GitHub API Error Response:`, JSON.stringify(errorDetails, null, 2));
+    } catch {
+      errorDetails = await response.text();
+      console.error(`[triggerWorkflow] ❌ GitHub API Error (text):`, errorDetails);
+    }
+
+    // Specific error messages for common issues
+    if (response.status === 404) {
+      throw new Error(
+        `Workflow not found: Check if 'fix-code.yml' exists in .github/workflows/ of ${workerOwner}/${workerRepo}`
+      );
+    } else if (response.status === 403) {
+      throw new Error(
+        `Permission denied: GITHUB_PAT may lack 'workflow' scope or repository access. Error: ${JSON.stringify(errorDetails)}`
+      );
+    } else if (response.status === 422) {
+      throw new Error(
+        `Invalid workflow inputs: ${JSON.stringify(errorDetails)}`
+      );
+    } else {
+      throw new Error(
+        `Failed to trigger workflow (${response.status}): ${JSON.stringify(errorDetails)}`
+      );
+    }
   }
 
   console.log(

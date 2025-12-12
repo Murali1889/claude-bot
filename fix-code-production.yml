@@ -1,0 +1,965 @@
+# Production Claude Bot Worker Workflow
+# Features:
+# - Sonnet-only for consistency
+# - RCA editing support (skip RCA if user provides edited version)
+# - Smart code_base.md reuse from existing PRs
+# - Check for existing PRs to avoid duplicates
+
+name: Claude Fix Code - Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'Target repository (owner/repo)'
+        required: true
+        type: string
+      problem_statement:
+        description: 'Problem to fix'
+        required: true
+        type: string
+      installation_id:
+        description: 'GitHub App installation ID'
+        required: true
+        type: string
+      job_id:
+        description: 'Job ID for tracking'
+        required: true
+        type: string
+      api_key:
+        description: 'Anthropic API key'
+        required: true
+        type: string
+      complexity:
+        description: 'Fix complexity (simple/medium/complex)'
+        required: false
+        type: string
+        default: 'medium'
+      user_rca:
+        description: 'User-edited RCA (optional - if provided, skip RCA generation)'
+        required: false
+        type: string
+        default: ''
+      regeneration:
+        description: 'Is this a regeneration after RCA edit?'
+        required: false
+        type: boolean
+        default: false
+      image_urls:
+        description: 'Image URLs (comma-separated) for visual context'
+        required: false
+        type: string
+        default: ''
+      screenshots_base64:
+        description: 'Base64-encoded screenshots (JSON array)'
+        required: false
+        type: string
+        default: ''
+
+env:
+  API_BASE_URL: https://claude-bot.vercel.app
+  SUPABASE_FUNCTION_URL: https://riiisqzwbhlytogcjdmn.supabase.co/functions/v1/task-management
+  ANTHROPIC_API_KEY: ${{ inputs.api_key }}
+
+jobs:
+  fix-code:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # ========================================================================
+      # SETUP
+      # ========================================================================
+
+      - name: Generate Installation Token
+        id: generate-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+          installation_retrieval_mode: id
+          installation_retrieval_payload: ${{ inputs.installation_id }}
+
+      - name: Clone Target Repository
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ inputs.target_repo }}.git" repo
+          cd repo
+          git config user.name "Claude Bot"
+          git config user.email "bot@claudebot.app"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      # ========================================================================
+      # HANDLE IMAGES (if provided)
+      # ========================================================================
+
+      - name: Process Images
+        id: process_images
+        run: |
+          cd repo
+
+          IMAGE_CONTEXT=""
+          IMAGE_COUNT=0
+
+          # Create images directory
+          mkdir -p .claude-context/images
+
+          # Process image URLs
+          if [ -n "${{ inputs.image_urls }}" ]; then
+            echo "📸 Downloading images from URLs..."
+            IFS=',' read -ra URLS <<< "${{ inputs.image_urls }}"
+
+            for i in "${!URLS[@]}"; do
+              url="${URLS[$i]}"
+              url=$(echo "$url" | xargs) # trim whitespace
+
+              if [ -n "$url" ]; then
+                filename="screenshot_${i}.png"
+                echo "  Downloading: $url -> $filename"
+
+                curl -L -o ".claude-context/images/$filename" "$url" || {
+                  echo "  ⚠️  Failed to download $url"
+                  continue
+                }
+
+                IMAGE_CONTEXT="${IMAGE_CONTEXT}\n- Screenshot $((i+1)): .claude-context/images/$filename"
+                IMAGE_COUNT=$((IMAGE_COUNT + 1))
+              fi
+            done
+          fi
+
+          # Process base64 screenshots
+          if [ -n "${{ inputs.screenshots_base64 }}" ] && [ "${{ inputs.screenshots_base64 }}" != "[]" ]; then
+            echo "📸 Decoding base64 screenshots..."
+
+            # Parse JSON array and decode each image
+            echo '${{ inputs.screenshots_base64 }}' | jq -r '.[] | @base64d' | while IFS= read -r line; do
+              filename="screenshot_b64_${IMAGE_COUNT}.png"
+              echo "$line" | base64 -d > ".claude-context/images/$filename"
+              IMAGE_CONTEXT="${IMAGE_CONTEXT}\n- Screenshot $((IMAGE_COUNT+1)): .claude-context/images/$filename"
+              IMAGE_COUNT=$((IMAGE_COUNT + 1))
+            done
+          fi
+
+          # Save image context for later steps
+          if [ $IMAGE_COUNT -gt 0 ]; then
+            echo "has_images=true" >> $GITHUB_OUTPUT
+            echo "image_count=$IMAGE_COUNT" >> $GITHUB_OUTPUT
+            echo -e "$IMAGE_CONTEXT" > .claude-context/images.txt
+            echo "✅ Processed $IMAGE_COUNT images"
+          else
+            echo "has_images=false" >> $GITHUB_OUTPUT
+            echo "No images provided"
+          fi
+
+      # ========================================================================
+      # CHECK FOR EXISTING PRs AND REUSE code_base.md
+      # ========================================================================
+
+      - name: Check for Existing PRs and Reuse Documentation
+        id: check_existing
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          cd repo
+
+          echo "🔍 Checking for existing Claude Bot PRs in ${{ inputs.target_repo }}..."
+
+          # Get list of open PRs from Claude Bot in the TARGET repository
+          EXISTING_PRS=$(gh pr list --repo "${{ inputs.target_repo }}" --state open --author "Claude Bot" --json number,headRefName,title --limit 10)
+
+          echo "Found PRs: $EXISTING_PRS"
+
+          # Check if code_base.md exists in any PR
+          CODE_BASE_FOUND=false
+
+          for pr_number in $(echo "$EXISTING_PRS" | jq -r '.[].number'); do
+            echo "Checking PR #$pr_number for code_base.md..."
+
+            # Try to fetch code_base.md from the PR branch in TARGET repository
+            PR_BRANCH=$(gh pr view $pr_number --repo "${{ inputs.target_repo }}" --json headRefName --jq '.headRefName')
+
+            if git show "origin/$PR_BRANCH:code_base.md" > code_base.md 2>/dev/null; then
+              echo "✅ Found code_base.md in PR #$pr_number (branch: $PR_BRANCH)"
+              CODE_BASE_FOUND=true
+              echo "has_codebase_doc=true" >> $GITHUB_OUTPUT
+              break
+            fi
+          done
+
+          if [ "$CODE_BASE_FOUND" = false ]; then
+            echo "No existing code_base.md found in PRs"
+            echo "has_codebase_doc=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update Status - Existing PR Check
+        run: |
+          # Update main API
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"existing_pr_checked\": true,
+              \"reused_codebase_doc\": ${{ steps.check_existing.outputs.has_codebase_doc == 'true' }}
+            }" || true
+
+          # Update Supabase function
+          curl -X POST "${{ env.SUPABASE_FUNCTION_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"type\": \"git_repo_status\",
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"target_repo\": \"${{ inputs.target_repo }}\",
+              \"status\": \"existing_pr_checked\",
+              \"data\": {
+                \"existing_pr_checked\": true,
+                \"reused_codebase_doc\": ${{ steps.check_existing.outputs.has_codebase_doc == 'true' }}
+              },
+              \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"
+            }" || true
+
+      # ========================================================================
+      # PHASE 1: ROOT CAUSE ANALYSIS (Skip if user provided edited RCA)
+      # ========================================================================
+
+      - name: Update Status - RCA Started
+        if: inputs.user_rca == ''
+        run: |
+          # Update main API
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"rca_started\"
+            }" || true
+
+          # Update Supabase function
+          curl -X POST "${{ env.SUPABASE_FUNCTION_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"type\": \"git_repo_status\",
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"target_repo\": \"${{ inputs.target_repo }}\",
+              \"status\": \"rca_started\",
+              \"data\": {},
+              \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"
+            }" || true
+
+      - name: Generate Root Cause Analysis
+        id: rca
+        if: inputs.user_rca == ''
+        run: |
+          cd repo
+
+          echo "🔍 Generating Root Cause Analysis with Sonnet..."
+
+          # Build image context
+          IMAGE_PROMPT=""
+          if [ "${{ steps.process_images.outputs.has_images }}" = "true" ]; then
+            IMAGE_PROMPT="
+
+          ## Visual Context
+          IMPORTANT: Review the screenshots in .claude-context/images/ directory.
+          These images provide visual context for the problem.
+          Use 'cat' or image viewing tools to analyze them.
+          "
+          fi
+
+          # Use Sonnet for RCA with comprehensive template
+          claude --model sonnet -p "You are a senior software architect performing a professional Root Cause Analysis.
+
+          ## Problem Statement
+          ${{ inputs.problem_statement }}
+          $IMAGE_PROMPT
+
+          ## Your Task
+          Create a comprehensive RCA document in Markdown format following this structure:
+
+          # RCA: [Brief Title of the Issue]
+
+          ## I. Incident Overview
+          * **Date & Time (UTC):** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          * **Severity (Technical):** [Critical/Major/Minor - assess based on problem description]
+          * **Impact Summary:** [1-2 sentences: who is affected and how]
+
+          ## II. Technical Analysis (Engineering Perspective)
+
+          ### Affected Components
+          * **Services/Modules:** [List affected parts: Database, API, Frontend, etc.]
+          * **Files Likely Involved:** [List specific files that need changes]
+
+          ### Root Cause (Technical)
+          * **The What:** [Specific bug, configuration error, or code issue]
+          * **The Trigger:** [What action caused this? Deployment, traffic spike, user action, etc.]
+
+          ### Immediate Symptoms
+          * [List observable symptoms: errors, performance issues, crashes, etc.]
+
+          ## III. The \"Why\" (Deep Dive)
+
+          ### Five Whys Analysis
+          1. **Why did the problem occur?** [First level answer]
+          2. **Why did that happen?** [Dig deeper]
+          3. **Why was that the case?** [Continue drilling]
+          4. **Why wasn't this prevented?** [Process/system question]
+          5. **Root Cause:** [The fundamental issue - code, architecture, or process gap]
+
+          ### Technical Debt Identified
+          * [Is this caused by legacy code, known fragility, or shortcuts taken?]
+          * [What underlying issues does this expose?]
+
+          ## IV. Proposed Solution
+
+          ### Immediate Fix (What we'll implement now)
+          * **Approach:** [High-level technical approach]
+          * **Why this solution:** [Technical justification]
+          * **Expected outcome:** [What will be fixed]
+
+          ### Files to Change
+          List specific files with reasons:
+          * \`path/to/file1.ts\` - [Specific change needed and why]
+          * \`path/to/file2.ts\` - [Specific change needed and why]
+          * \`path/to/file3.ts\` - [Specific change needed and why]
+
+          ### Verification Method
+          * **Automated Tests:** [Unit tests, integration tests, E2E tests to add/run]
+          * **Manual Testing:** [See Manual Test Cases below]
+          * **Deployment Strategy:** [Canary, gradual rollout, etc.]
+
+          ### Manual Test Cases
+          Provide step-by-step test cases for reviewers to manually verify the fix:
+
+          #### Test Case 1: [Primary Fix Verification]
+          **Steps:**
+          1. [Step-by-step instructions]
+          2. [Be specific with URLs, inputs, clicks]
+          3. [Include any setup/prerequisites]
+
+          **Expected Result:**
+          - [What should happen]
+
+          **Success Criteria:**
+          - [ ] [Specific measurable outcome]
+
+          #### Test Case 2: [Edge Case / Regression]
+          **Steps:**
+          1. [Test that related functionality still works]
+          2. [Test edge cases]
+
+          **Expected Result:**
+          - [What should happen]
+
+          **Success Criteria:**
+          - [ ] [Specific measurable outcome]
+
+          #### Test Case 3: [Error Handling]
+          **Steps:**
+          1. [Test error scenarios]
+          2. [Verify graceful degradation]
+
+          **Expected Result:**
+          - [What should happen]
+
+          **Success Criteria:**
+          - [ ] [Specific measurable outcome]
+
+          ## V. Prevention & Long-term Actions
+
+          ### Immediate Actions (In this PR)
+          * [ ] Fix the immediate bug
+          * [ ] Add test coverage for this scenario
+          * [ ] Update error handling
+
+          ### Follow-up Actions (For backlog)
+          * [ ] [Long-term improvement 1] - [Owner: TBD] [Priority: High/Medium/Low]
+          * [ ] [Long-term improvement 2] - [Owner: TBD] [Priority: High/Medium/Low]
+          * [ ] [Process improvement] - [Owner: TBD] [Priority: High/Medium/Low]
+
+          ### Monitoring Gaps Identified
+          * [What monitoring/alerting should we add to catch this earlier next time?]
+
+          ## VI. Business Context (If Applicable)
+
+          ### User Impact
+          * **Scope:** [How many users affected? Specific features broken?]
+          * **Business Risk:** [Revenue impact, data loss risk, brand damage?]
+
+          ### Communication
+          * **Stakeholder notification needed?** [Yes/No - if production issue]
+          * **Status page update?** [Yes/No]
+
+          ---
+
+          **Important Guidelines:**
+          - Be specific and technical - use actual file paths, error types, etc.
+          - Focus on the 'why' not just the 'what'
+          - Think about prevention, not just fixing
+          - Keep it professional but clear (avoid jargon where possible)
+          - Limit to ~600 words total while covering all sections
+          - Leave checkboxes [ ] for action items
+
+          Save this as 'RCA.md'.
+          " --dangerously-skip-permissions --max-turns 10 || true
+
+          if [ -f "RCA.md" ]; then
+            echo "✅ RCA created"
+            echo "rca_created=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ RCA creation failed"
+            echo "rca_created=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Use User-Edited RCA
+        id: use_user_rca
+        if: inputs.user_rca != ''
+        run: |
+          cd repo
+
+          echo "📝 Using user-edited RCA..."
+
+          cat > RCA.md <<'RCAEOF'
+          ${{ inputs.user_rca }}
+          RCAEOF
+
+          echo "✅ User RCA saved"
+          echo "rca_created=true" >> $GITHUB_OUTPUT
+
+      - name: Update Status - RCA Completed
+        if: steps.rca.outputs.rca_created == 'true' || steps.use_user_rca.outputs.rca_created == 'true'
+        run: |
+          cd repo
+
+          RCA_CONTENT=$(cat RCA.md | jq -Rs .)
+
+          # Update main API
+          cat > /tmp/rca_payload.json <<EOF
+          {
+            "job_id": "${{ inputs.job_id }}",
+            "status": "rca_completed",
+            "rca": $RCA_CONTENT,
+            "rca_edited": ${{ inputs.user_rca != '' }}
+          }
+          EOF
+
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            --data @/tmp/rca_payload.json || true
+
+          # Update Supabase function
+          cat > /tmp/supabase_rca_payload.json <<EOF
+          {
+            "type": "git_repo_status",
+            "job_id": "${{ inputs.job_id }}",
+            "target_repo": "${{ inputs.target_repo }}",
+            "status": "rca_completed",
+            "data": {
+              "rca": $RCA_CONTENT,
+              "rca_edited": ${{ inputs.user_rca != '' }}
+            },
+            "timestamp": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          }
+          EOF
+
+          curl -X POST "${{ env.SUPABASE_FUNCTION_URL }}" \
+            -H "Content-Type: application/json" \
+            --data @/tmp/supabase_rca_payload.json || true
+
+      # ========================================================================
+      # PHASE 2: CODEBASE DOCUMENTATION (Skip if exists)
+      # ========================================================================
+
+      - name: Create or Reuse Codebase Documentation
+        id: codebase_doc
+        run: |
+          cd repo
+
+          if [ -f "code_base.md" ]; then
+            echo "✅ code_base.md already exists (reused from existing PR)"
+            echo "doc_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "📝 Creating code_base.md with Sonnet..."
+
+            claude --model sonnet -p "Create a concise 'code_base.md' file.
+
+            ## Project Overview (2-3 sentences)
+            - Tech stack
+            - Main purpose
+
+            ## Directory Structure
+            \`\`\`
+            /src
+              /components - ...
+              /services - ...
+            \`\`\`
+
+            ## Key Files (Top 10 only)
+            - \`file.ts\` - Purpose
+
+            ## Architecture Patterns
+            - Main patterns used
+
+            Keep under 300 lines. Save as 'code_base.md'.
+            " --dangerously-skip-permissions --max-turns 8 || true
+
+            if [ -f "code_base.md" ]; then
+              echo "✅ code_base.md created"
+              echo "doc_exists=true" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️  code_base.md creation failed, continuing"
+              echo "doc_exists=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      # ========================================================================
+      # PHASE 3: CODE CHANGES
+      # ========================================================================
+
+      - name: Create or Reuse Fix Branch
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          cd repo
+
+          if [ "${{ inputs.regeneration }}" = "true" ]; then
+            # Regeneration - find and reuse existing branch
+            echo "🔄 Regeneration: Looking for existing branch..."
+
+            # Try to find existing branch for this job
+            # Pattern: claude-fix-* branches
+            EXISTING_BRANCH=$(git branch -r | grep "origin/claude-fix-" | head -1 | sed 's/origin\///' | xargs)
+
+            if [ -n "$EXISTING_BRANCH" ]; then
+              echo "✅ Found existing branch: $EXISTING_BRANCH"
+              BRANCH_NAME="$EXISTING_BRANCH"
+
+              # Checkout existing branch
+              git fetch origin "$BRANCH_NAME"
+              git checkout "$BRANCH_NAME"
+              git pull origin "$BRANCH_NAME"
+
+              echo "♻️  Reusing branch: $BRANCH_NAME"
+            else
+              echo "⚠️  No existing branch found, creating new one"
+              BRANCH_NAME="claude-fix-$(date +%s)"
+              git checkout -b "$BRANCH_NAME"
+            fi
+          else
+            # First run - create new branch
+            BRANCH_NAME="claude-fix-$(date +%s)"
+            git checkout -b "$BRANCH_NAME"
+            echo "🆕 Created new branch: $BRANCH_NAME"
+          fi
+
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          echo "IS_EXISTING_BRANCH=${{ inputs.regeneration }}" >> $GITHUB_ENV
+
+      - name: Update Status - Code Changes Started
+        run: |
+          # Update main API
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"code_changes_started\"
+            }" || true
+
+          # Update Supabase function
+          curl -X POST "${{ env.SUPABASE_FUNCTION_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"type\": \"git_repo_status\",
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"target_repo\": \"${{ inputs.target_repo }}\",
+              \"status\": \"code_changes_started\",
+              \"data\": {},
+              \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"
+            }" || true
+
+      - name: Make Code Changes
+        id: fix
+        run: |
+          cd repo
+
+          echo "🔨 Making code changes with Sonnet..."
+
+          RCA_CONTEXT=""
+          if [ -f "RCA.md" ]; then
+            RCA_CONTEXT="IMPORTANT: Read RCA.md first - it contains the root cause analysis and solution approach."
+          fi
+
+          CODEBASE_CONTEXT=""
+          if [ -f "code_base.md" ]; then
+            CODEBASE_CONTEXT="Read code_base.md to understand the codebase structure."
+          fi
+
+          IMAGE_CONTEXT=""
+          if [ "${{ steps.process_images.outputs.has_images }}" = "true" ]; then
+            IMAGE_CONTEXT="
+
+          ## Visual Context
+          Screenshots are available in .claude-context/images/ directory.
+          These provide visual context for the problem (e.g., UI bugs, error screenshots, design mockups).
+          Review them to understand what needs to be fixed.
+          "
+          fi
+
+          # Use Sonnet for code changes
+          claude --model sonnet -p "Fix this issue efficiently:
+
+          ## Problem
+          ${{ inputs.problem_statement }}
+
+          ## Context
+          $RCA_CONTEXT
+          $CODEBASE_CONTEXT
+          $IMAGE_CONTEXT
+
+          ## Instructions
+          1. Read RCA.md - it has the solution approach
+          2. Read code_base.md to understand structure
+          3. If screenshots are available, review them in .claude-context/images/
+          4. Make ONLY necessary changes - no refactoring
+          5. Follow the RCA recommendations closely
+          6. Keep changes minimal and focused
+          7. DO NOT modify RCA.md or code_base.md
+          8. DO NOT commit images (they're for context only)
+
+          Implement the fix now.
+          " --dangerously-skip-permissions --max-turns 15 || true
+
+      - name: Check for Changes
+        id: changes
+        run: |
+          cd repo
+
+          # Don't commit RCA.md (it's in PR description)
+          git reset RCA.md 2>/dev/null || true
+
+          # Don't commit images (they're for context only)
+          git reset .claude-context/ 2>/dev/null || true
+          git clean -fd .claude-context/ 2>/dev/null || true
+
+          # Keep code_base.md in commit
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "✅ Changes detected"
+
+            CHANGED_FILES=$(git status --porcelain | awk '{print $2}' | jq -R -s -c 'split("\n")[:-1]')
+            echo "files_changed=$CHANGED_FILES" >> $GITHUB_OUTPUT
+
+            git status --short
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "❌ No changes made"
+          fi
+
+      - name: Update Status - Code Changes Completed
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          # Update main API
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"code_changes_completed\",
+              \"files_changed\": ${{ steps.changes.outputs.files_changed }}
+            }" || true
+
+          # Update Supabase function
+          curl -X POST "${{ env.SUPABASE_FUNCTION_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"type\": \"git_repo_status\",
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"target_repo\": \"${{ inputs.target_repo }}\",
+              \"status\": \"code_changes_completed\",
+              \"data\": {
+                \"files_changed\": ${{ steps.changes.outputs.files_changed }}
+              },
+              \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"
+            }" || true
+
+      # ========================================================================
+      # PHASE 4: COMMIT AND PR
+      # ========================================================================
+
+      - name: Commit Changes
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          cd repo
+          git add -A
+          git reset RCA.md 2>/dev/null || true
+
+          if [ "${{ inputs.regeneration }}" = "true" ]; then
+            git commit -m "fix: regenerated with updated RCA - ${{ inputs.problem_statement }}" || true
+          else
+            git commit -m "fix: ${{ inputs.problem_statement }}" || true
+          fi
+
+      - name: Push Branch
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          cd repo
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ inputs.target_repo }}.git"
+
+          if [ "${{ inputs.regeneration }}" = "true" ]; then
+            echo "🔄 Force pushing to update existing PR..."
+            git push -f origin "$BRANCH_NAME"
+          else
+            echo "🆕 Pushing new branch..."
+            git push -u origin "$BRANCH_NAME"
+          fi
+
+      - name: Create or Update Pull Request
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          cd repo
+
+          PR_TITLE=$(echo "${{ inputs.problem_statement }}" | head -c 72)
+
+          RCA_SECTION=""
+          MANUAL_TESTS=""
+          if [ -f "RCA.md" ]; then
+            RCA_SECTION=$(cat RCA.md)
+
+            # Extract Manual Test Cases section for PR body
+            MANUAL_TESTS=$(sed -n '/### Manual Test Cases/,/## V\. Prevention/p' RCA.md | sed '$d' || echo "")
+          fi
+
+          DIFF_STATS=$(git diff HEAD~1 --stat)
+          CHANGED_FILES=$(git diff HEAD~1 --name-only)
+
+          REGEN_NOTE=""
+          if [ "${{ inputs.regeneration }}" = "true" ]; then
+            REGEN_NOTE="
+          ## 🔄 Regeneration
+
+          This PR was regenerated with an updated RCA based on user feedback.
+          Regeneration count: Used edited RCA from user review.
+
+          ---"
+          fi
+
+          REUSE_NOTE=""
+          if [ "${{ steps.check_existing.outputs.has_codebase_doc }}" = "true" ]; then
+            REUSE_NOTE="
+          ## ♻️ Documentation Reused
+
+          This PR reused \`code_base.md\` from an existing Claude Bot PR to save time and maintain consistency.
+
+          ---"
+          fi
+
+          # Build manual test section for PR
+          MANUAL_TEST_SECTION=""
+          if [ -n "$MANUAL_TESTS" ]; then
+            MANUAL_TEST_SECTION="
+          ## ✅ Manual Test Cases
+
+          $MANUAL_TESTS
+
+          > **⚠️ Reviewers:** Please execute these test cases and check off the success criteria before approving this PR.
+
+          ---
+          "
+          fi
+
+          PR_BODY="## 🤖 Automated Fix by Claude Bot
+
+          ### Problem Statement
+          ${{ inputs.problem_statement }}
+
+          ---
+
+          ## 📊 Root Cause Analysis
+
+          $RCA_SECTION
+
+          ---
+          $MANUAL_TEST_SECTION
+
+          ## 📝 Changes Made
+
+          ### Files Modified
+          \`\`\`
+          $CHANGED_FILES
+          \`\`\`
+
+          ### Diff Statistics
+          \`\`\`
+          $DIFF_STATS
+          \`\`\`
+          $REGEN_NOTE
+          $REUSE_NOTE
+
+          ---
+
+          **Model:** Claude Sonnet 4.5
+          **Complexity:** ${{ inputs.complexity }}
+          **Job ID:** \`${{ inputs.job_id }}\`
+          **Branch:** \`$BRANCH_NAME\`
+          "
+
+          # Check if PR already exists for this branch
+          EXISTING_PR=$(gh pr list --head "$BRANCH_NAME" --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "♻️  Updating existing PR #$EXISTING_PR..."
+
+            # Update PR body
+            gh pr edit "$EXISTING_PR" --body "$PR_BODY"
+
+            # Get PR URL
+            PR_URL=$(gh pr view "$EXISTING_PR" --json url --jq '.url')
+            PR_NUMBER="$EXISTING_PR"
+
+            echo "✅ Pull request updated: $PR_URL"
+          else
+            echo "🆕 Creating new PR..."
+
+            # Create new PR
+            PR_URL=$(gh pr create \
+              --title "$PR_TITLE" \
+              --body "$PR_BODY" \
+              --base main \
+              --head "$BRANCH_NAME" 2>&1 | tail -1)
+
+            echo "✅ Pull request created: $PR_URL"
+
+            PR_NUMBER=$(echo "$PR_URL" | grep -o '[0-9]*$')
+          fi
+
+          echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+
+      - name: Update Status - PR Created
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          # Update main API
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"pr_created\",
+              \"pr_url\": \"$PR_URL\",
+              \"pr_number\": $PR_NUMBER,
+              \"branch_name\": \"$BRANCH_NAME\"
+            }" || true
+
+          # Update Supabase function
+          curl -X POST "${{ env.SUPABASE_FUNCTION_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"type\": \"git_repo_status\",
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"target_repo\": \"${{ inputs.target_repo }}\",
+              \"status\": \"pr_created\",
+              \"data\": {
+                \"pr_url\": \"$PR_URL\",
+                \"pr_number\": $PR_NUMBER,
+                \"branch_name\": \"$BRANCH_NAME\"
+              },
+              \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"
+            }" || true
+
+      - name: Mark as Completed
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          # Update main API
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"completed\",
+              \"pr_url\": \"$PR_URL\",
+              \"pr_number\": $PR_NUMBER,
+              \"branch_name\": \"$BRANCH_NAME\"
+            }" || true
+
+          # Update Supabase function
+          curl -X POST "${{ env.SUPABASE_FUNCTION_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"type\": \"git_repo_status\",
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"target_repo\": \"${{ inputs.target_repo }}\",
+              \"status\": \"completed\",
+              \"data\": {
+                \"pr_url\": \"$PR_URL\",
+                \"pr_number\": $PR_NUMBER,
+                \"branch_name\": \"$BRANCH_NAME\"
+              },
+              \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"
+            }" || true
+
+      # ========================================================================
+      # ERROR HANDLING
+      # ========================================================================
+
+      - name: Report No Changes
+        if: steps.changes.outputs.has_changes == 'false'
+        run: |
+          # Update main API
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"failed\",
+              \"error_message\": \"Claude did not make any code changes\"
+            }" || true
+
+          # Update Supabase function
+          curl -X POST "${{ env.SUPABASE_FUNCTION_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"type\": \"git_repo_status\",
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"target_repo\": \"${{ inputs.target_repo }}\",
+              \"status\": \"failed\",
+              \"data\": {
+                \"error_message\": \"Claude did not make any code changes\"
+              },
+              \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"
+            }" || true
+
+      - name: Report Failure
+        if: failure()
+        run: |
+          # Update main API
+          curl -X POST "${{ env.API_BASE_URL }}/api/fix/status" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"status\": \"failed\",
+              \"error_message\": \"Workflow failed - check GitHub Actions logs\"
+            }" || true
+
+          # Update Supabase function
+          curl -X POST "${{ env.SUPABASE_FUNCTION_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"type\": \"git_repo_status\",
+              \"job_id\": \"${{ inputs.job_id }}\",
+              \"target_repo\": \"${{ inputs.target_repo }}\",
+              \"status\": \"failed\",
+              \"data\": {
+                \"error_message\": \"Workflow failed - check GitHub Actions logs\"
+              },
+              \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"
+            }" || true
