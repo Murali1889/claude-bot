@@ -23,7 +23,8 @@ export const dynamic = "force-dynamic";
  *   "installation_id": number,
  *   "repository_id": number,
  *   "repository_full_name": string,
- *   "problem_statement": string
+ *   "problem_statement": string,
+ *   "slack_context"?: object (optional - for Slack-triggered jobs)
  * }
  */
 export async function POST(request: NextRequest) {
@@ -64,6 +65,7 @@ export async function POST(request: NextRequest) {
       repository_id,
       repository_full_name,
       problem_statement,
+      slack_context,
     } = body;
 
     // Validate required fields
@@ -180,6 +182,15 @@ export async function POST(request: NextRequest) {
       confidence: classification.confidence,
     });
 
+    // Log Slack context if provided
+    if (slack_context) {
+      console.log("Slack context provided:", {
+        has_thread: !!slack_context.thread_ts,
+        has_channel: !!slack_context.channel_id,
+        has_user: !!slack_context.user_id,
+      });
+    }
+
     // Create fix_job in database with classification
     const { data: job, error: jobError } = await supabase
       .from("fix_jobs")
@@ -195,6 +206,7 @@ export async function POST(request: NextRequest) {
         bug_type: classification.bugType,
         priority: classification.priority,
         classification_confidence: classification.confidence,
+        slack_context: slack_context || null,
       })
       .select()
       .single();
