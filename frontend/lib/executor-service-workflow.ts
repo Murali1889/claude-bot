@@ -146,28 +146,35 @@ async function triggerWorkerWorkflow(
 
   // Trigger workflow_dispatch using fetch (simpler than Octokit for this)
   console.log(`[triggerWorkflow] Making POST request to GitHub API...`);
-  const response = await fetch(workflowUrl, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${githubToken}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      ref: "main",
-      inputs: {
-        target_repo: targetRepo,
-        problem_statement: problemStatement,
-        installation_id: installationId.toString(),
-        job_id: jobId,
-        api_key: apiKey,
-        complexity: complexity,
-      },
-    }),
-  });
 
-  console.log(`[triggerWorkflow] Response status: ${response.status} ${response.statusText}`);
+  let response;
+  try {
+    response = await fetch(workflowUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${githubToken}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ref: "main",
+        inputs: {
+          target_repo: targetRepo,
+          problem_statement: problemStatement,
+          installation_id: installationId.toString(),
+          job_id: jobId,
+          api_key: apiKey,
+          complexity: complexity,
+        },
+      }),
+    });
+
+    console.log(`[triggerWorkflow] ✅ Response status: ${response.status} ${response.statusText}`);
+  } catch (fetchError) {
+    console.error(`[triggerWorkflow] ❌ Fetch error:`, fetchError);
+    throw new Error(`Failed to make request to GitHub API: ${fetchError instanceof Error ? fetchError.message : 'Unknown error'}`);
+  }
 
   if (!response.ok) {
     const error = await response.text();
