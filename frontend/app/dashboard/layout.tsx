@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Home, Settings, Briefcase, Wrench, LogOut } from 'lucide-react';
+import { Home, Settings, Briefcase, Wrench, LogOut, Linkedin } from 'lucide-react';
 
 export default async function DashboardLayout({
   children,
@@ -59,7 +59,22 @@ export default async function DashboardLayout({
             ))}
           </nav>
         </TooltipProvider>
-        <nav className="mt-auto flex flex-col items-center gap-4 px-2 sm:py-5">
+        <TooltipProvider>
+          <nav className="mt-auto flex flex-col items-center gap-4 px-2 sm:py-5">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <a
+                  href="https://www.linkedin.com/in/murali-gurajapu/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground md:h-8 md:w-8"
+                >
+                  <Linkedin className="h-5 w-5" />
+                  <span className="sr-only">LinkedIn</span>
+                </a>
+              </TooltipTrigger>
+              <TooltipContent side="right">LinkedIn</TooltipContent>
+            </Tooltip>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Avatar className="h-9 w-9 cursor-pointer">
@@ -78,7 +93,8 @@ export default async function DashboardLayout({
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-        </nav>
+          </nav>
+        </TooltipProvider>
       </aside>
       <div className="flex flex-col sm:gap-4 sm:py-4 sm:pl-14 flex-1">
         <main className="grid flex-1 items-start gap-4 p-4 sm:px-6 sm:py-0 md:gap-8">
