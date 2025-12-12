@@ -207,7 +207,92 @@ export default function JobsClient({ user }: Props) {
 function JobCard({ job, isSelected, isUpdated, onSelect, getStageIndex }: any) {
   const currentStage = getStageIndex(job.status);
   const isActive = !['completed', 'failed'].includes(job.status);
+  const isFinished = ['completed', 'failed'].includes(job.status);
 
+  // For completed jobs: Two-column layout without progress tracker
+  if (isFinished) {
+    return (
+      <div className={`bg-white dark:bg-gray-800 rounded-lg border transition-all duration-300 ${
+        isUpdated ? "border-indigo-400 shadow-lg shadow-indigo-100 dark:shadow-indigo-900/20" : "border-gray-200 dark:border-gray-700 hover:shadow-md"
+      }`}>
+        <div className="grid md:grid-cols-2 gap-4 p-4">
+          {/* Left: RCA & Details */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <div className={`px-2 py-1 rounded text-xs font-medium ${
+                job.status === 'completed' ? 'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400' : 'bg-rose-100 dark:bg-rose-900/20 text-rose-700 dark:text-rose-400'
+              }`}>
+                {job.status === 'completed' ? '✓ Completed' : '✕ Failed'}
+              </div>
+              {job.pr_url && (
+                <a href={job.pr_url} target="_blank" rel="noopener noreferrer"
+                  className="px-2 py-1 bg-indigo-600 text-white text-xs font-medium rounded hover:bg-indigo-700 transition-colors">
+                  View PR →
+                </a>
+              )}
+            </div>
+
+            {job.rca && (
+              <div>
+                <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">Root Cause Analysis</h4>
+                <div className="prose prose-sm prose-slate dark:prose-invert max-w-none bg-gray-50 dark:bg-gray-900/50 rounded p-3 text-xs max-h-64 overflow-y-auto">
+                  <ReactMarkdown>{job.rca}</ReactMarkdown>
+                </div>
+              </div>
+            )}
+
+            {job.files_changed && job.files_changed.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">Files Changed ({job.files_changed.length})</h4>
+                <div className="bg-gray-50 dark:bg-gray-900/50 rounded overflow-hidden max-h-32 overflow-y-auto">
+                  {job.files_changed.map((file: string, i: number) => (
+                    <div key={i} className="px-3 py-1.5 text-xs font-mono text-gray-700 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 last:border-0">
+                      {file}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {job.error_message && (
+              <div className="p-2 bg-rose-50 dark:bg-rose-900/10 border border-rose-200 dark:border-rose-800 rounded text-xs text-rose-700 dark:text-rose-300">
+                {job.error_message}
+              </div>
+            )}
+          </div>
+
+          {/* Right: Problem Statement */}
+          <div className="space-y-3">
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <svg className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                </svg>
+                <span className="text-xs text-gray-500 dark:text-gray-400">{job.repository_full_name}</span>
+              </div>
+              <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">Problem Statement</h4>
+              <p className="text-sm text-gray-900 dark:text-white leading-relaxed">{job.problem_statement}</p>
+            </div>
+
+            <div className="pt-3 border-t border-gray-200 dark:border-gray-700 space-y-2 text-xs text-gray-600 dark:text-gray-400">
+              <div className="flex justify-between">
+                <span>Created</span>
+                <span>{new Date(job.created_at).toLocaleString()}</span>
+              </div>
+              {job.completed_at && (
+                <div className="flex justify-between">
+                  <span>Completed</span>
+                  <span>{new Date(job.completed_at).toLocaleString()}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // For in-progress jobs: Keep original layout with progress tracker
   return (
     <div className={`bg-white dark:bg-gray-800 rounded-lg border transition-all duration-300 ${
       isUpdated ? "border-indigo-400 shadow-lg shadow-indigo-100 dark:shadow-indigo-900/20" : "border-gray-200 dark:border-gray-700 hover:shadow-md"
@@ -221,34 +306,23 @@ function JobCard({ job, isSelected, isUpdated, onSelect, getStageIndex }: any) {
               </svg>
               <span className="text-xs text-gray-500 dark:text-gray-400 truncate">{job.repository_full_name}</span>
             </div>
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-white line-clamp-1">{job.problem_statement}</h3>
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white line-clamp-2">{job.problem_statement}</h3>
           </div>
-          {job.pr_url && (
-            <a href={job.pr_url} target="_blank" rel="noopener noreferrer"
-              className="flex-shrink-0 px-3 py-1 bg-emerald-600 text-white text-xs font-medium rounded hover:bg-emerald-700 transition-colors">
-              PR →
-            </a>
-          )}
         </div>
 
-        {/* Progress */}
+        {/* Progress Tracker */}
         <div className="flex items-center gap-1.5 mb-3">
           {STATUS_STAGES.map((stage, idx) => {
-            const isCompleted = idx < currentStage || job.status === 'completed';
+            const isCompleted = idx < currentStage;
             const isCurrent = idx === currentStage && isActive;
             return (
               <div key={stage.key} className="flex-1 flex flex-col items-center">
                 <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium transition-all mb-1 ${
-                  job.status === 'failed' ? 'bg-rose-100 dark:bg-rose-900/20 text-rose-600' :
                   isCompleted ? 'bg-emerald-100 dark:bg-emerald-900/20 text-emerald-600' :
                   isCurrent ? 'bg-indigo-100 dark:bg-indigo-900/20 text-indigo-600 animate-pulse' :
                   'bg-gray-100 dark:bg-gray-700 text-gray-400'
                 }`}>
-                  {job.status === 'failed' ? (
-                    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                    </svg>
-                  ) : isCompleted ? (
+                  {isCompleted ? (
                     <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
                       <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
                     </svg>
@@ -264,51 +338,25 @@ function JobCard({ job, isSelected, isUpdated, onSelect, getStageIndex }: any) {
           })}
         </div>
 
-        {/* Error */}
         {job.error_message && (
           <div className="mb-3 p-2 bg-rose-50 dark:bg-rose-900/10 border border-rose-200 dark:border-rose-800 rounded text-xs text-rose-700 dark:text-rose-300">
             {job.error_message}
           </div>
         )}
 
-        <button onClick={onSelect}
-          className="w-full py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
-          {isSelected ? 'Hide Details ↑' : 'View Details ↓'}
-        </button>
+        {job.rca && (
+          <button onClick={onSelect}
+            className="w-full py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+            {isSelected ? 'Hide RCA ↑' : 'View RCA ↓'}
+          </button>
+        )}
       </div>
 
-      {isSelected && (
-        <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 p-4 space-y-4 animate-fade-in">
-          {job.rca && (
-            <div>
-              <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2 flex items-center gap-1.5">
-                <svg className="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                Root Cause Analysis
-              </h4>
-              <div className="prose prose-sm prose-slate dark:prose-invert max-w-none bg-white dark:bg-gray-800 rounded p-3 text-xs">
-                <ReactMarkdown>{job.rca}</ReactMarkdown>
-              </div>
-            </div>
-          )}
-          {job.files_changed && job.files_changed.length > 0 && (
-            <div>
-              <h4 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2 flex items-center gap-1.5">
-                <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                Files ({job.files_changed.length})
-              </h4>
-              <div className="bg-white dark:bg-gray-800 rounded overflow-hidden max-h-32 overflow-y-auto">
-                {job.files_changed.map((file: string, i: number) => (
-                  <div key={i} className="px-3 py-1.5 text-xs font-mono text-gray-700 dark:text-gray-300 border-b border-gray-100 dark:border-gray-700 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-700/50">
-                    {file}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+      {isSelected && job.rca && (
+        <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 p-4 animate-fade-in">
+          <div className="prose prose-sm prose-slate dark:prose-invert max-w-none bg-white dark:bg-gray-800 rounded p-3 text-xs">
+            <ReactMarkdown>{job.rca}</ReactMarkdown>
+          </div>
         </div>
       )}
     </div>
