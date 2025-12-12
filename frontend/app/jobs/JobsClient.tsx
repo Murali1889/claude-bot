@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { createBrowserClient } from "@/lib/supabase";
+import "./animations.css";
 
 interface User {
   id: string;
@@ -35,13 +37,100 @@ export default function JobsClient({ user }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [updatedJobs, setUpdatedJobs] = useState<Set<string>>(new Set()); // Track which jobs were just updated
+  const [notifications, setNotifications] = useState<Array<{ id: string; message: string }>>([]);
 
   useEffect(() => {
     fetchJobs();
-    // Poll for updates every 5 seconds
-    const interval = setInterval(fetchJobs, 5000);
-    return () => clearInterval(interval);
+
+    // Set up Supabase real-time subscription
+    const supabase = createBrowserClient();
+
+    const channel = supabase
+      .channel('fix_jobs_changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*', // Listen to all events (INSERT, UPDATE, DELETE)
+          schema: 'public',
+          table: 'fix_jobs',
+          filter: `user_id=eq.${user.id}`, // Only subscribe to this user's jobs
+        },
+        (payload) => {
+          console.log('Real-time update:', payload);
+          handleRealtimeUpdate(payload);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user.id]);
+
+  // Refetch when filter changes
+  useEffect(() => {
+    fetchJobs();
   }, [statusFilter]);
+
+  const handleRealtimeUpdate = (payload: any) => {
+    const eventType = payload.eventType;
+    const newJob = payload.new as FixJob;
+    const oldJob = payload.old as FixJob;
+
+    if (eventType === 'INSERT') {
+      // New job created
+      setJobs((prev) => [newJob, ...prev]);
+      setUpdatedJobs((prev) => new Set(prev).add(newJob.id));
+      showNotification(newJob.id, `New job created: ${newJob.problem_statement.substring(0, 50)}...`);
+
+      // Remove highlight after 3 seconds
+      setTimeout(() => {
+        setUpdatedJobs((prev) => {
+          const next = new Set(prev);
+          next.delete(newJob.id);
+          return next;
+        });
+      }, 3000);
+    } else if (eventType === 'UPDATE') {
+      // Job updated
+      setJobs((prev) =>
+        prev.map((job) => (job.id === newJob.id ? newJob : job))
+      );
+      setUpdatedJobs((prev) => new Set(prev).add(newJob.id));
+
+      // Show notification for important status changes
+      if (newJob.status === 'completed') {
+        showNotification(newJob.id, `✅ Job completed! PR created.`);
+      } else if (newJob.status === 'failed') {
+        showNotification(newJob.id, `❌ Job failed: ${newJob.error_message || 'Unknown error'}`);
+      } else if (newJob.status === 'rca_completed') {
+        showNotification(newJob.id, `🔍 RCA completed`);
+      }
+
+      // Remove highlight after 3 seconds
+      setTimeout(() => {
+        setUpdatedJobs((prev) => {
+          const next = new Set(prev);
+          next.delete(newJob.id);
+          return next;
+        });
+      }, 3000);
+    } else if (eventType === 'DELETE') {
+      // Job deleted
+      setJobs((prev) => prev.filter((job) => job.id !== oldJob.id));
+    }
+  };
+
+  const showNotification = (id: string, message: string) => {
+    const notifId = `${id}-${Date.now()}`;
+    setNotifications((prev) => [...prev, { id: notifId, message }]);
+
+    // Remove notification after 5 seconds
+    setTimeout(() => {
+      setNotifications((prev) => prev.filter((n) => n.id !== notifId));
+    }, 5000);
+  };
 
   const fetchJobs = async () => {
     try {
@@ -184,6 +273,29 @@ export default function JobsClient({ user }: Props) {
 
   return (
     <div className="space-y-6">
+      {/* Toast Notifications */}
+      <div className="fixed top-20 right-4 z-50 space-y-2">
+        {notifications.map((notif) => (
+          <div
+            key={notif.id}
+            className="bg-blue-600 text-white px-6 py-3 rounded-lg shadow-lg animate-slide-in-right flex items-center gap-3 max-w-md"
+          >
+            <svg
+              className="w-5 h-5 flex-shrink-0"
+              fill="currentColor"
+              viewBox="0 0 20 20"
+            >
+              <path
+                fillRule="evenodd"
+                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                clipRule="evenodd"
+              />
+            </svg>
+            <p className="text-sm font-medium">{notif.message}</p>
+          </div>
+        ))}
+      </div>
+
       {/* Filters */}
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm p-4">
         <div className="flex items-center gap-3 overflow-x-auto">
@@ -240,7 +352,11 @@ export default function JobsClient({ user }: Props) {
           {jobs.map((job) => (
             <div
               key={job.id}
-              className="bg-white dark:bg-gray-800 rounded-lg shadow-sm overflow-hidden border border-gray-200 dark:border-gray-700"
+              className={`bg-white dark:bg-gray-800 rounded-lg shadow-sm overflow-hidden border transition-all duration-500 ${
+                updatedJobs.has(job.id)
+                  ? "border-blue-500 ring-2 ring-blue-200 dark:ring-blue-800 animate-pulse-subtle"
+                  : "border-gray-200 dark:border-gray-700"
+              }`}
             >
               {/* Job Header */}
               <div className="p-6">
